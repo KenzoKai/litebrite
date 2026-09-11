@@ -1,0 +1,34 @@
+import { chromium } from '@playwright/test';
+import assert from 'node:assert/strict';
+const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
+try {
+ const p=await browser.newPage({viewport:{width:390,height:844},hasTouch:true});
+ await p.addInitScript(()=>{window.registeredTools={};Object.defineProperty(document,'modelContext',{value:{registerTool(tool){window.registeredTools[tool.name]=tool;}}});});
+ await p.goto(process.env.TEST_BASE_URL || 'http://localhost:5173/');
+ await p.waitForFunction(()=>window.registeredTools?.blackout_board);
+ const schema=await p.evaluate(()=>window.registeredTools.blackout_board.inputSchema);
+ assert.equal(schema.additionalProperties,false);
+ const c=p.locator('canvas'); const r=await c.boundingBox();
+ await p.touchscreen.tap(r.x+r.width*.5,r.y+r.height*.5);
+ await p.waitForTimeout(60);
+ const lit=()=>c.evaluate(c=>{const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;return Array.from(d).some((v,i)=>i%4!==3&&v>100)});
+ assert.equal(await lit(),true);
+ const bad=await p.evaluate(()=>{try{window.registeredTools.blackout_board.execute({unexpected:1});return false}catch{return true}});
+ assert.equal(bad,true);assert.equal(await lit(),true);
+ const result=await p.evaluate(()=>window.registeredTools.blackout_board.execute({}));
+ assert.deepEqual(result,{cleared:true});await p.waitForTimeout(100);assert.equal(await lit(),false);
+ console.log('PASS: WebMCP blackout validates input, registers expected schema, and clears visible state');
+ await p.getByRole('button',{name:'How it stays private'}).click();
+ assert.equal(await p.getByRole('heading',{name:'Here, then gone.'}).isVisible(),true);
+ await p.getByRole('button',{name:'Close',exact:true}).click();
+ await p.getByRole('radio',{name:'Fade after 1 second',exact:true}).check();
+ await p.touchscreen.tap(r.x+r.width*.5,r.y+r.height*.5);
+ await p.waitForTimeout(1250);assert.equal(await lit(),false);
+ console.log('PASS: privacy dialog, touch, and one-second fading');
+ await p.setViewportSize({width:320,height:800});
+ assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ await p.screenshot({path:'outputs/narrow-phone.png'});
+ await p.setViewportSize({width:1280,height:1000});
+ await p.screenshot({path:'outputs/board-desktop.png'});
+ console.log('PASS: 320px phone layout does not overflow');
+} finally { await browser.close(); }
