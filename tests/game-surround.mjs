@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 await mkdir('outputs',{recursive:true});
 const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
-const contexts=await Promise.all([browser.newContext({viewport:{width:1280,height:1000}}),browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:3,isMobile:true,hasTouch:true})]);
+const contexts=await Promise.all([browser.newContext({viewport:{width:1920,height:1000}}),browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:3,isMobile:true,hasTouch:true})]);
 const [a,b]=await Promise.all(contexts.map(c=>c.newPage())),pages=[a,b],errors=[];
 pages.forEach(p=>p.on('pageerror',e=>errors.push(e.message)));
 const base=process.env.TEST_BASE_URL||'http://127.0.0.1:5183/';
@@ -11,9 +11,16 @@ async function cells(page,points,draw=false){return page.locator('.frame-canvas 
  const r=c.getBoundingClientRect(),g=c.closest('.game-stage').querySelector('.game-stage-center').getBoundingClientRect();
  const left=g.left-r.left,top=g.top-r.top,right=g.right-r.left,bottom=g.bottom-r.top;
  return points.map(([x,y])=>{
-  const edge=y<8||y>=28;
-  const px=edge?(x+.5)*r.width/56:x<8?(x+.5)*left/8:right+(x-48+.5)*(r.width-right)/8;
-  const py=y<8?(y+.5)*top/8:y>=28?bottom+(y-28+.5)*(r.height-bottom)/8:top+(y-8+.5)*(bottom-top)/20;
+  // Test locations expressed in the old ring's convenient fractional regions.
+  const nx=Math.floor(x<8?(x+.5)*256/8:x>=48?768+(x-48+.5)*256/8:256+(x-8+.5)*512/40)+.5;
+  const ny=Math.floor(y<8?(y+.5)*128/8:y>=28?896+(y-28+.5)*128/8:128+(y-8+.5)*768/20)+.5;
+  const rawX=nx<256?nx*left/256:nx>=768?right+(nx-768)*(r.width-right)/256:left+(nx-256)*(right-left)/512;
+  const rawY=ny<128?ny*top/128:ny>=896?bottom+(ny-896)*(r.height-bottom)/128:top+(ny-128)*(bottom-top)/768;
+  // Send exact normalized positions; inspect the nearest uniformly spaced peg.
+  if(draw)return {x:r.left+rawX,y:r.top+rawY};
+  const cols=Math.floor(r.width/10),rows=Math.floor(r.height/10),ox=(r.width-cols*10)/2,oy=(r.height-rows*10)/2;
+  const px=ox+(Math.max(0,Math.min(cols-1,Math.floor((rawX-ox)/10)))+.5)*10;
+  const py=oy+(Math.max(0,Math.min(rows-1,Math.floor((rawY-oy)/10)))+.5)*10;
   if(draw)return {x:r.left+px,y:r.top+py};
   const d=c.getContext('2d').getImageData(Math.max(0,Math.floor(px*c.width/r.width)-1),Math.max(0,Math.floor(py*c.height/r.height)-1),3,3).data;
   return [...d].some((v,i)=>i%4!==3&&v>120);
@@ -36,6 +43,19 @@ try{
   }
  }
  console.log('PASS: all four drawable margins map between desktop and phone, in both directions');
+ // A short phone stroke across its left margin must fill the wider desktop margin.
+ await b.getByRole('button',{name:'Clear drawings',exact:true}).click();
+ await b.locator('.frame-canvas canvas').scrollIntoViewIfNeeded();
+ const [sideStart,sideEnd]=await cells(b,[[0,18],[7,18]],true);
+ const sideCDP=await contexts[1].newCDPSession(b);
+ await sideCDP.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[sideStart]});
+ for(let i=1;i<=12;i++){await sideCDP.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:sideStart.x+(sideEnd.x-sideStart.x)*i/12,y:sideStart.y}]});await b.waitForTimeout(20);}
+ await sideCDP.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+ const sideSamples=Array.from({length:61},(_,i)=>[0.1+i*6.8/60,18]);
+ await expect.poll(async()=> {return (await cells(a,sideSamples)).filter(Boolean).length;},{timeout:3000}).toBe(61);
+ await a.screenshot({path:'outputs/game-surround-desktop.png',fullPage:true});
+ console.log('PASS: phone side stroke fills 61 desktop samples without gaps');
+
  // Hold a finger across updates, then make a chess move without resetting the ink.
  await b.getByRole('button',{name:'Clear drawings',exact:true}).click();await b.locator('.frame-canvas canvas').scrollIntoViewIfNeeded();
  const [start,end]=await cells(b,[[16,3],[40,5]],true);const cdp=await contexts[1].newCDPSession(b);

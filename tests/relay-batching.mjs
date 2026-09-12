@@ -34,6 +34,12 @@ try{
  const surface=crypto.randomUUID();sender.draw({points:[1700],color:2,ttl:1000,surface});await flush();
  assert.equal(delivered.at(-1).surface,surface,'drawing surface must survive encryption and batching');
  delivered.length=0;
+ const fine=Array.from({length:2400},(_,i)=>500000+i);
+ sender.draw({points:fine,color:1,ttl:3000,surface,grid:'frame'});
+ for(let i=0;i<4;i++)await flush();
+ assert.deepEqual(delivered.flatMap(s=>s.points),fine,'fine frame coordinates must drain without truncation');
+ assert.ok(delivered.every(s=>s.grid==='frame'&&s.surface===surface),'frame format and round survive encryption');
+ delivered.length=0;
  const board=Array.from({length:2016},(_,i)=>i);
  sender.draw({points:board,color:3,ttl:3000});
  for(let i=0;i<4;i++)await flush();

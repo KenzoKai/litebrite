@@ -1,11 +1,11 @@
 "use client";
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { Hand, Pencil, Minus, Plus, Scan } from 'lucide-react';
 import { COLS, ROWS, INITIAL_VIEW, constrainView, transform, cellAt, zoomAt, lineCells, type Size } from './board-geometry';
-import { frameCell, framePeg, inFrame, type Frame } from './game-frame-geometry';
+import { frameCell, framePeg, frameGrid, frameIndex, frameLine, visiblePeg, FRAME_COLS, type Frame } from './game-frame-geometry';
 export { COLS, ROWS } from './board-geometry';
 export const COLORS = ['#ffc45c', '#ff6f80', '#b79aff', '#72caff', '#86e0af', '#f4eee3'];
-export type Stroke = { points: number[]; color: number; ttl: number; surface?: string };
+export type Stroke = { points: number[]; color: number; ttl: number; surface?: string; grid?: 'frame' };
 type Peg = { color: number; born: number; ttl: number };
 type Point = { x: number; y: number };
 export default function Board({ color, fade, clearVersion, onDraw, subscribe, cutout, surface }: {
@@ -37,14 +37,15 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe, cu
   function fit() { view.current = { ...INITIAL_VIEW }; resetGesture(); setPan(false); refreshView(); }
   function zoomBy(factor: number) { view.current = zoomAt(view.current.zoom * factor, size.current.width / 2, size.current.height / 2, size.current, view.current); last.current = null; refreshView(); }
 
-  useEffect(() => { pegs.current.clear(); last.current = null; invalidate.current(); }, [clearVersion]);
-  useEffect(() => subscribe?.(s => {
+  // Install drawing and measure the cutout before a newly selected game is painted.
+  useLayoutEffect(() => { pegs.current.clear(); last.current = null; invalidate.current(); }, [clearVersion]);
+  useLayoutEffect(() => subscribe?.(s => {
     if (s === null) { pegs.current.clear(); last.current = null; invalidate.current(); return; }
-    if (document.hidden || s.surface !== current.current.surface) return;
+    if (document.hidden || s.surface !== current.current.surface || (s.grid === 'frame') !== !!cutout) return;
     for (const p of s.points) pegs.current.set(p, { color: s.color, born: performance.now(), ttl: s.ttl });
     setTouched(true); invalidate.current();
-  }), [subscribe]);
-  useEffect(() => {
+  }), [subscribe, cutout]);
+  useLayoutEffect(() => {
     const el = canvas.current!, ctx = el.getContext('2d')!;
     let raf = 0;
     const draw = () => {
@@ -63,17 +64,23 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe, cu
       if (!frame.current) ctx.strokeRect(left + .5, top + .5, COLS * scale - 1, ROWS * scale - 1);
       const now = performance.now();
       for (const [key, peg] of pegs.current) if (now - peg.born >= peg.ttl) pegs.current.delete(key);
-      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
-        if (frame.current && !inFrame(x,y)) continue;
+      const grid = frame.current ? frameGrid(frame.current) : {cols:COLS,rows:ROWS};
+      const displayed = new Map<number,Peg>();
+      if (frame.current) for (const [key,peg] of pegs.current) {
+        const index=frameIndex(key%FRAME_COLS,Math.floor(key/FRAME_COLS),frame.current);
+        if(index!==null && (!displayed.has(index) || displayed.get(index)!.born<=peg.born)) displayed.set(index,peg);
+      }
+      for (let y = 0; y < grid.rows; y++) for (let x = 0; x < grid.cols; x++) {
+        if (frame.current && !visiblePeg(x,y,frame.current)) continue;
         const pegPosition = frame.current ? framePeg(x,y,frame.current) : {x:left+(x+.5)*scale,y:top+(y+.5)*scale,r:Math.max(1,scale*.22)};
         const {x:px,y:py,r} = pegPosition;
         if (px < -r || px > w + r || py < -r || py > h + r) continue;
-        const peg = pegs.current.get(y * COLS + x);
+        const peg = frame.current ? displayed.get(y * grid.cols + x) : pegs.current.get(y * COLS + x);
         const alpha = peg ? Math.pow(Math.max(0, 1 - (now - peg.born) / peg.ttl), 1.15) : 0;
         ctx.globalAlpha = 1; ctx.shadowBlur = 0; ctx.fillStyle = '#2b3332';
         ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
         if (peg) {
-          ctx.globalAlpha = alpha; ctx.shadowBlur = Math.min(22, scale * 1.2) * alpha;
+          ctx.globalAlpha = alpha; ctx.shadowBlur = Math.min(22, frame.current ? 12 : scale * 1.2) * alpha;
           ctx.shadowColor = COLORS[peg.color]; ctx.fillStyle = COLORS[peg.color]; ctx.fill();
           ctx.shadowBlur = 0; ctx.fillStyle = '#fff3da'; ctx.globalAlpha = alpha * .85;
           ctx.beginPath(); ctx.arc(px, py, r * .45, 0, Math.PI * 2); ctx.fill();
@@ -82,7 +89,7 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe, cu
       ctx.globalAlpha = 1; ctx.shadowBlur = 0;
       if (focused.current) {
         ctx.strokeStyle = '#d7c597'; ctx.lineWidth = 1.5;
-        if (frame.current && inFrame(cursor.current.x,cursor.current.y)) { const p=framePeg(cursor.current.x,cursor.current.y,frame.current); ctx.strokeRect(p.x-p.r*2,p.y-p.r*2,p.r*4,p.r*4); }
+        if (frame.current && visiblePeg(cursor.current.x,cursor.current.y,frame.current)) { const p=framePeg(cursor.current.x,cursor.current.y,frame.current); ctx.strokeRect(p.x-p.r*2,p.y-p.r*2,p.r*4,p.r*4); }
         else if (!frame.current) ctx.strokeRect(left + cursor.current.x * scale, top + cursor.current.y * scale, scale, scale);
       }
       if (pegs.current.size) raf = requestAnimationFrame(draw);
@@ -117,16 +124,30 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe, cu
   }, [cutout]);
 
   function put(points: number[]) {
-    if (frame.current) points = points.filter(p => inFrame(p % COLS, Math.floor(p / COLS)));
     if (!points.length) return;
-    const stroke = { points, color: current.current.color, ttl: current.current.fade, ...(current.current.surface ? {surface:current.current.surface} : {}) };
+    const stroke: Stroke = { points, ...(frame.current ? {grid:'frame' as const} : {}), color: current.current.color, ttl: current.current.fade, ...(current.current.surface ? {surface:current.current.surface} : {}) };
     for (const p of points) pegs.current.set(p, { color: stroke.color, born: performance.now(), ttl: stroke.ttl });
     current.current.onDraw?.(stroke); setTouched(true); invalidate.current();
   }
   function light(p: Point) {
-    const cell = frame.current ? frameCell(p.x,p.y,frame.current) : cellAt(p.x, p.y, size.current, view.current);
-    if (!cell) { last.current = null; return; } // Letterbox space never becomes an edge stroke.
+    if(frame.current) {
+      const f=frame.current,from=last.current||p;
+      const steps=Math.max(1,Math.ceil(Math.hypot(p.x-from.x,p.y-from.y)/4));
+      const points=new Set<number>();let previous=frameCell(from.x,from.y,f);
+      for(let i=0;i<=steps;i++) {
+        const cell=frameCell(from.x+(p.x-from.x)*i/steps,from.y+(p.y-from.y)*i/steps,f);
+        if(cell)for(const point of frameLine(previous||cell,cell))points.add(point);
+        previous=cell;
+      }
+      put([...points]);last.current=p;return;
+    }
+    const cell = cellAt(p.x, p.y, size.current, view.current);
+    if (!cell) { last.current = null; return; }
     put(lineCells(last.current || cell, cell)); last.current = cell;
+  }
+  function lightCursor() {
+    if(frame.current) {const p=framePeg(cursor.current.x,cursor.current.y,frame.current);last.current=null;light(p);}
+    else put([cursor.current.y*COLS+cursor.current.x]);
   }
   function position(e: { clientX: number; clientY: number }) {
     const rect = canvas.current!.getBoundingClientRect();
@@ -198,8 +219,9 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe, cu
         onKeyDown={e => {
           if (e.key !== 'Escape') e.stopPropagation();
           const delta: Record<string, Point> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
-          if (delta[e.key]) { e.preventDefault(); focused.current = true; cursor.current = { x: Math.max(0, Math.min(COLS - 1, cursor.current.x + delta[e.key].x)), y: Math.max(0, Math.min(ROWS - 1, cursor.current.y + delta[e.key].y)) }; if (e.shiftKey) put([cursor.current.y * COLS + cursor.current.x]); else invalidate.current(); }
-          else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); put([cursor.current.y * COLS + cursor.current.x]); }
+          const grid=frame.current ? frameGrid(frame.current) : {cols:COLS,rows:ROWS};
+          if (delta[e.key]) { e.preventDefault(); focused.current = true; cursor.current = { x: Math.max(0, Math.min(grid.cols - 1, cursor.current.x + delta[e.key].x)), y: Math.max(0, Math.min(grid.rows - 1, cursor.current.y + delta[e.key].y)) }; if (e.shiftKey) lightCursor(); else invalidate.current(); }
+          else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); lightCursor(); }
           else if (!cutout && (e.key === '+' || e.key === '=')) { e.preventDefault(); zoomBy(1.5); }
           else if (!cutout && e.key === '-') { e.preventDefault(); zoomBy(1 / 1.5); }
           else if (!cutout && e.key === '0') { e.preventDefault(); fit(); }
