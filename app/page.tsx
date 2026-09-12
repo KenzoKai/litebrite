@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Radio, ShieldCheck, Moon, Link2, Copy, Check, Share2, X } from 'lucide-react';
+import { ArrowUpRight, ShieldCheck, Moon, Link2, Copy, Check, Share2, X } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import Board, { COLORS, type Stroke } from './board';

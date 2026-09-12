@@ -1,6 +1,6 @@
 # Afterglow
 
-A two-person, ephemeral Lite-Brite communication board. Share a single-use invitation, draw with a mouse or touch screen, and watch every light disappear after 1–3 seconds.
+A standard **React + Vite** app: a two-person, ephemeral Lite-Brite communication board. Share a single-use invitation, draw with a mouse or touch screen, and watch every light disappear after 1–3 seconds.
 
 ## Run
 
@@ -12,6 +12,32 @@ npm run dev
 ```
 
 Open the printed local URL. Internet access is required to pair browsers. The deployed site uses HTTPS; local development uses localhost. To use a phone, use the deployed HTTPS URL rather than an insecure LAN address.
+
+## Deploy on Hostinger
+
+In Hostinger’s **Deploy Web App → Import Git Repository** flow, select `KenzoKai/litebrite`, branch `main`, and these build settings:
+
+| Setting | Value |
+| --- | --- |
+| Framework | **Vite** (React frontend) |
+| Node.js | **24.x** |
+| Root directory | Repository root (`.`) |
+| Package manager | npm |
+| Install command, if shown | `npm ci` |
+| Build command | `npm run build` |
+| Output directory | `dist` |
+| Environment variables | None required |
+| Application entry / start command | Not needed for the Vite frontend preset |
+
+If an earlier import reported “Unsupported framework,” import or redeploy the current `main` commit and select Vite. The repository has a root `index.html`, `vite.config.ts`, and standard Vite package scripts. It no longer depends on Vinext, Next.js, Wrangler, or Cloudflare runtime bindings.
+
+Hostinger serves the generated static files. No application backend, server process, database, or credentials are needed. HTTPS is required for invitation cryptography and reliable clipboard support. The signaling/relay services still require internet access.
+
+For ordinary static hosting instead: run `npm ci && npm run build`, then upload the **contents of `dist/`** to `public_html`, including the `.htaccess` file. For Hostinger’s Node.js ZIP-import flow, upload the source project (root `package.json`, lockfile, and `index.html`), excluding `node_modules`, `.git`, and `outputs`.
+
+Preview the built files locally with `npm run preview` (testing only, not a production server).
+
+Official reference: [Hostinger deployment guide](https://www.hostinger.com/support/how-to-deploy-a-nodejs-website-in-hostinger/).
 
 ## Behavior
 
@@ -51,4 +77,4 @@ The privacy-safe optional WebMCP tool `blackout_board` clears the same board as 
 
 ## Hosting
 
-This project uses Sites hosting, as identified by `.openai/hosting.json`. The app has no database or object-store binding. Its source and built assets can be served independently of the connection service. No OpenAI API key is required.
+The same `dist/` output also supports the existing Sites deployment via `.openai/hosting.json`. This file is only deployment metadata; Hostinger does not need it to build or run the app. `public/_headers` provides compatible static-host header rules; `public/.htaccess` provides equivalent rules for Apache/OpenLiteSpeed. The document itself declares a no-referrer policy. Verify host-specific HTTP header support in your hosting configuration. No OpenAI API key is required.
