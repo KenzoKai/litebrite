@@ -187,3 +187,8 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:10
 }
 
 @media(max-width:370px) { .playing .fade-control>.fine { display:none; } }
+/* Let wide screens use all of the space beside the game for drawing. */
+.game-stage,.game-noughts .game-stage,.game-blocks .game-stage { max-width:none; }
+.game-stage-center { max-width:480px; margin-inline:auto; }
+.game-noughts .game-stage-center { max-width:400px; }
+.game-blocks .game-stage-center { max-width:460px; }
