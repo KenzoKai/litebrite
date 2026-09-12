@@ -15,6 +15,16 @@ Open the printed local URL. Internet access is required to pair browsers. The de
 
 ## Deploy on Hostinger
 
+### Existing PHP/HTML website (Advanced → GIT)
+
+The existing `white-oyster-665886.hostingersite.com` site uses Hostinger's file-copy Git deployment into `public_html`. This flow does **not** run npm/Vite; deploying `main` directly displays a blank page because browsers cannot run `/src/main.tsx`.
+
+For this flow select branch **`codex/hostinger`**, with destination **`public_html`**. The GitHub Actions workflow **Build Hostinger site** compiles every push to `main` and updates that branch with only the deployable contents of `dist`, including `.htaccess`. Wait for the workflow to finish before clicking Redeploy in Hostinger. The existing Hostinger auto-deployment preference is independent of this build workflow.
+
+Keep development on `main`; do not edit generated files on `codex/hostinger`. That branch serves the same React + Vite app without requiring a Node process or build step on Hostinger.
+
+### Node.js / Vite web app hosting
+
 In Hostinger’s **Deploy Web App → Import Git Repository** flow, select `KenzoKai/litebrite`, branch `main`, and these build settings:
 
 | Setting | Value |

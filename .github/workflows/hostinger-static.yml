@@ -1,0 +1,54 @@
+name: Build Hostinger site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hostinger-static
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify static entrypoint
+        run: |
+          test -f dist/index.html
+          test -f dist/.htaccess
+          test -d dist/assets
+          if grep -q '/src/main.tsx' dist/index.html; then
+            echo 'Uncompiled source entrypoint in build output'
+            exit 1
+          fi
+      - name: Update Hostinger deployment branch
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git ls-remote --exit-code --heads origin codex/hostinger; then
+            git fetch origin codex/hostinger
+            git worktree add --detach "$RUNNER_TEMP/hostinger-site" FETCH_HEAD
+          else
+            git worktree add --detach "$RUNNER_TEMP/hostinger-site" HEAD
+            git -C "$RUNNER_TEMP/hostinger-site" checkout --orphan codex/hostinger
+            git -C "$RUNNER_TEMP/hostinger-site" rm -rf .
+          fi
+          rsync -a --delete --exclude=.git dist/ "$RUNNER_TEMP/hostinger-site/"
+          git -C "$RUNNER_TEMP/hostinger-site" add -A
+          if ! git -C "$RUNNER_TEMP/hostinger-site" diff --cached --quiet; then
+            git -C "$RUNNER_TEMP/hostinger-site" commit -m "Build Afterglow from $SOURCE_SHA"
+            git -C "$RUNNER_TEMP/hostinger-site" push origin HEAD:refs/heads/codex/hostinger
+          fi
