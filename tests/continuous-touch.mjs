@@ -10,6 +10,10 @@ const lit = page => page.locator('canvas').evaluate(c => {
 try {
   const desktopContext=await browser.newContext({viewport:{width:1280,height:900},hasTouch:true});
   const phoneContext=await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:3,isMobile:true,hasTouch:true});
+  for (const context of [desktopContext, phoneContext]) await context.addInitScript(() => {
+    window.RTCPeerConnection = class { constructor() { throw new Error('Direct peer connections are forbidden'); } };
+    window.WebSocket = class { constructor() { throw new Error('External signaling is forbidden'); } };
+  });
   const desktop=await desktopContext.newPage(), phone=await phoneContext.newPage();
   const errors=[]; for(const p of [desktop,phone]) p.on('pageerror',e=>errors.push(e.message));
   await desktop.goto(process.env.TEST_BASE_URL || 'http://localhost:5173/');
@@ -41,5 +45,12 @@ try {
     console.log(`PASS: eight-second uninterrupted ${sender===phone?'phone → desktop':'desktop → phone'} touch, then complete fade`);
     await cdp.detach();
   }
+  await phoneContext.route('**/relay.php', route => route.abort());
+  await phone.getByText('The private server connection is interrupted. Retrying automatically.').waitFor({timeout:7000});
+  await phoneContext.unroute('**/relay.php');
+  await phone.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:10000});
+  assert.equal(await lit(phone),false,'recovery must not replay drawings');
+  console.log('PASS: relay failure stops communication and recovery reconnects without old strokes');
   assert.deepEqual(errors,[]);
+  console.log('PASS: both participants communicate with WebRTC and WebSocket signaling disabled');
 }finally{await browser.close();}

@@ -1,6 +1,4 @@
-import type { Peer, DataConnection } from 'peerjs';
 import type { Stroke } from './board';
-import { createIceConfig, hasTurnRelay } from './ice-config';
 
 export type RoomState = 'idle' | 'creating' | 'waiting' | 'full' | 'joining' | 'connected' | 'ended' | 'error';
 type Events = {
@@ -10,7 +8,8 @@ type Events = {
   clear: () => void;
   away: (away: boolean) => void;
 };
-type Message = { type: string; seq?: number; at?: number; points?: number[]; color?: number; ttl?: number; away?: boolean };
+type Message = { type: 'hello' | 'stroke' | 'clear' | 'presence'; seq?: number; at?: number; points?: number[]; color?: number; ttl?: number; away?: boolean };
+type Reply = { state: 'waiting' | 'full' | 'connected' | 'left'; partner?: string; session?: string; packets?: string[] };
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 function encode(bytes: Uint8Array): string {
@@ -19,72 +18,66 @@ function encode(bytes: Uint8Array): string {
 function decode(value: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 }
+function hex(bytes: Uint8Array) { return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''); }
 export function parseInvite(hash: string): { host: string; secret: string } | null {
   const match = /^#room=(lb-[a-f0-9]{32})\.([A-Za-z0-9_-]{43})$/.exec(hash);
   return match ? { host: match[1], secret: match[2] } : null;
 }
 
-/** No persistence, telemetry, transcript, or message replay. Keys live only in this object. */
+/** Relay-only HTTPS. No WebRTC, peer addresses, persistent storage, or drawing replay. */
 export class LightRoom {
-  private peer?: Peer;
-  private identity = ''; 
   private key?: CryptoKey;
-  private active?: DataConnection;
-  private candidates = new Set<DataConnection>();
-  private timers = new Set<ReturnType<typeof setTimeout>>();
-  private heartbeat?: ReturnType<typeof setInterval>;
-  private disposed = false;
-  private joined = false;
-  private sent = 0;
-  private pendingSend = 0;
-  private received = new WeakMap<DataConnection, number>();
-  private offsets = new WeakMap<DataConnection, number>();
-  private lastSeen = 0;
   private roomId = '';
-  private PeerClass?: typeof Peer;
-  private epoch = 0;
-  private iceConfig?: RTCConfiguration;
-  private iceExpires = 0;
-  private tabChannel?: BroadcastChannel;
+  private roomHash = '';
+  private identity = hex(crypto.getRandomValues(new Uint8Array(16)));
+  private token = hex(crypto.getRandomValues(new Uint8Array(32)));
+  private endpoint = '';
+  private session = '';
+  private partner = '';
+  private joined = false;
+  private disposed = false;
   private hidden = false;
-  private drawing?: { points: Set<number>; color: number; ttl: number; at: number };
-  private drawingTimer?: ReturnType<typeof setTimeout>;
+  private sent = 0;
+  private received = 0;
+  private offset = 0;
+  private lastSeen = 0;
+  private epoch = 0;
+  private clearEpoch = 0;
+  private clearPending = false;
+  private discardIncoming = false;
+  private lastPresence = 0;
+  private drawing?: { points: Map<number, number>; color: number; ttl: number };
+  private timer?: ReturnType<typeof setTimeout>;
+  private request?: AbortController;
+  private tabChannel?: BroadcastChannel;
+  private lastState = '';
   constructor(private events: Events) {}
 
-  private later(fn: () => void, ms: number) {
-    const timer = setTimeout(() => { this.timers.delete(timer); if (!this.disposed) fn(); }, ms);
-    this.timers.add(timer);
-    return timer;
+  private state(state: RoomState, detail = '') {
+    const value = `${state}:${detail}`;
+    if (value !== this.lastState) { this.lastState = value; this.events.state(state, detail); }
   }
-  private fail(detail: string) { this.destroy(); this.events.state('error', detail); }
   async start(invite?: { host: string; secret: string }) {
-    this.events.state(invite ? 'joining' : 'creating');
+    this.state(invite ? 'joining' : 'creating');
     try {
-      if (!window.isSecureContext || !crypto.subtle || !window.RTCPeerConnection) {
-        this.fail('This browser cannot make a secure connection. Open this link in an up-to-date Safari, Chrome, or Firefox browser.'); return;
-      }
+      if (!window.isSecureContext || !crypto.subtle) throw new Error('secure_context');
       const secret = invite?.secret || encode(crypto.getRandomValues(new Uint8Array(32)));
       this.roomId = invite?.host || 'lb-' + crypto.randomUUID().replace(/-/g, '');
       this.key = await crypto.subtle.importKey('raw', decode(secret), 'AES-GCM', false, ['encrypt', 'decrypt']);
+      // The relay gets a domain-separated capability hash, never the fragment or encryption key.
+      this.roomHash = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(`afterglow-relay-v1:${this.roomId}:${secret}`))));
       if (this.disposed) return;
-      const { default: Peer } = await import('peerjs');
-      if (this.disposed) return;
-      this.PeerClass = Peer;
-      this.iceConfig = await createIceConfig();
-      this.iceExpires = Date.now() + 23 * 3600000;
-      if (this.disposed) return;
-      // Keep only the reusable capability link, never drawing history. Fragments stay off HTTP requests.
+      this.endpoint = ['localhost', '127.0.0.1'].includes(location.hostname) ? '/relay.php' : 'https://litebrite.it/relay.php';
       const url = `${location.origin}${location.pathname}#room=${this.roomId}.${secret}`;
-      history.replaceState(null, '', url);
-      this.events.invite(url);
+      history.replaceState(null, '', url); this.events.invite(url);
       this.claimBrowserTab();
-      this.openPeer(false);
-    } catch { this.fail('A secure room could not be created. Check your browser and reopen this room link.'); }
+      void this.poll();
+    } catch {
+      this.destroy(); this.state('error', 'A secure room could not be created. Open this link in an up-to-date browser over HTTPS.');
+    }
   }
-
   private claimBrowserTab() {
     if (typeof BroadcastChannel === 'undefined') return;
-    // Coordinate only live tabs in this browser. No storage, drawing data, or room key.
     const stamp = `${String(Date.now()).padStart(16, '0')}:${crypto.randomUUID()}`;
     const channel = new BroadcastChannel(`afterglow-room:${this.roomId}`);
     this.tabChannel = channel;
@@ -95,213 +88,145 @@ export class LightRoom {
     };
     channel.postMessage({ type: 'claim', stamp });
   }
-
-  private stopTransport() {
-    this.discardDrawing();
-    // Invalidate callbacks before closing transports; stale attempts must never end a new connection.
-    this.epoch++;
-    this.joined = false;
-    for (const timer of this.timers) clearTimeout(timer);
-    this.timers.clear(); clearInterval(this.heartbeat);
-    this.active = undefined;
-    for (const c of this.candidates) c.close();
-    this.candidates.clear();
-    this.peer?.destroy(); this.peer = undefined;
+  private resetSession(session = '', partner = '') {
+    if (this.session === session && this.partner === partner) return;
+    this.epoch++; this.session = session; this.partner = partner;
+    this.joined = false; this.received = 0; this.lastSeen = 0; this.lastPresence = 0;
+    this.drawing = undefined; this.clearPending = false;
     this.events.clear(); this.events.away(false);
   }
-
-  private retry(detail = 'Reconnecting to this room. Keep this page open.', full = false) {
-    if (this.disposed) return;
-    this.stopTransport();
-    this.events.state(full ? 'full' : 'waiting', detail);
-    this.later(() => this.openPeer(false), 2000 + Math.random() * 1500);
-  }
-
-  private openPeer(guest: boolean) {
-    if (this.disposed || !this.PeerClass) return;
-    this.stopTransport();
-    const epoch = this.epoch;
-    if (Date.now() >= this.iceExpires) {
-      void createIceConfig().then(config => {
-        if (this.disposed || epoch !== this.epoch) return;
-        this.iceConfig = config; this.iceExpires = Date.now() + 23 * 3600000; this.openPeer(guest);
-      }).catch(() => { if (!this.disposed && epoch === this.epoch) this.retry(); });
-      return;
-    }
-    const current = () => !this.disposed && epoch === this.epoch;
-    const id = guest ? 'lb-' + crypto.randomUUID().replace(/-/g, '') : this.roomId;
-    this.identity = id;
-    // PeerJS arbitrates one rendezvous owner. Whichever browser arrives first owns it;
-    // another browser connects with a random identity. No persistent server room is needed.
-    const peer = new this.PeerClass(id, { debug: 0, logFunction: () => undefined, secure: true, config: this.iceConfig });
-    this.peer = peer;
-    const opening = this.later(() => this.retry('The connection service is unavailable. Retrying this room…'), 20000);
-    peer.on('open', () => {
-      if (!current()) return;
-      clearTimeout(opening); this.timers.delete(opening);
-      if (guest) this.attach(peer.connect(this.roomId, { serialization: 'raw', reliable: false }), true);
-      else this.events.state('waiting');
-    });
-    peer.on('connection', c => {
-      if (!current() || guest || this.candidates.size >= 4) { c.close(); return; }
-      this.attach(c, false);
-    });
-    peer.on('error', err => {
-      if (!current()) return;
-      if (err.type === 'unavailable-id' && !guest) this.openPeer(true);
-      else this.retry('Connection interrupted. Retrying this room…');
-    });
-    peer.on('disconnected', () => {
-      if (current()) this.retry();
-    });
-  }
-
-  private attach(c: DataConnection, guest: boolean) {
-    this.candidates.add(c);
-    const epoch = this.epoch;
-    const current = () => !this.disposed && epoch === this.epoch && this.candidates.has(c);
-    let queue = Promise.resolve(); let pending = 0;
-    const timeout = this.later(() => {
-      if (this.joined && this.active === c) return;
-      if (guest) this.retry(this.networkHelp());
-      else { if (this.active === c) this.active = undefined; c.close(); this.candidates.delete(c); }
-    }, 25000);
-    c.on('open', () => { if (current() && guest) void this.send(c, { type: 'hello' }); });
-    c.on('data', raw => {
-      if (!current() || typeof raw !== 'string' || raw.length > 5000 || pending >= 16) return;
-      pending++;
-      queue = queue.then(async () => {
-        try {
-          const msg = await this.unpack(c, raw);
-          if (!msg || !current()) return;
-          if (guest && msg.type === 'full') { this.retry('This room already has two people. Close another tab or leave on another device to make space.', true); return; }
-          if (!guest && msg.type === 'hello' && this.active && this.active !== c) {
-            await this.send(c, { type: 'full' });
-            this.later(() => { this.candidates.delete(c); c.close(); }, 250);
-            return;
-          }
-          if (!this.joined) {
-            if (!guest && msg.type === 'hello') {
-              if (this.active && this.active !== c) { c.close(); return; }
-              this.active = c; this.offsets.set(c, Date.now() - msg.at!);
-              await this.send(c, { type: 'welcome' });
-            } else if (guest && msg.type === 'welcome') {
-              this.active = c; this.offsets.set(c, Date.now() - msg.at!);
-              await this.send(c, { type: 'ready' });
-              if (current()) this.connected(c);
-            } else if (!guest && this.active === c && msg.type === 'ready') this.connected(c);
-            if (this.joined) { clearTimeout(timeout); this.timers.delete(timeout); }
-            return;
-          }
-          if (c !== this.active) return;
-          this.lastSeen = Date.now();
-          if (msg.type === 'stroke') {
-            const age = Math.max(0, Date.now() - (msg.at! + (this.offsets.get(c) || 0)));
-            if (!Array.isArray(msg.points) || msg.points.length > 120 || !msg.points.every(p => Number.isInteger(p) && p >= 0 && p < 2016) || !Number.isInteger(msg.color) || msg.color! < 0 || msg.color! > 5 || ![1000, 2000, 3000].includes(msg.ttl!)) return;
-            if (age >= msg.ttl!) return;
-            this.events.stroke({ points: msg.points, color: msg.color!, ttl: msg.ttl! - age });
-          } else if (msg.type === 'clear') this.events.clear();
-          else if (msg.type === 'presence') this.events.away(!!msg.away);
-          else if (msg.type === 'ping') await this.send(c, { type: 'pong', away: this.hidden });
-          else if (msg.type === 'pong') this.events.away(!!msg.away);
-          else if (msg.type === 'end') this.retry('The other person left. Waiting here for them to return.');
-        } catch { /* Invalid ciphertext is discarded without logging or retaining it. */ }
-      }).finally(() => { pending--; });
-    });
-    c.on('close', () => {
-      if (!current()) return;
-      this.candidates.delete(c);
-      if (this.active === c || guest) this.retry('The other person disconnected. Waiting for them to return.');
-    });
-    c.on('error', () => {
-      if (current() && (this.active === c || guest)) this.retry(this.networkHelp());
-    });
-  }
-  private networkHelp() {
-    return hasTurnRelay()
-      ? 'The network connection failed. Retrying; keep both pages open.'
-      : 'These networks could not connect directly. Try both devices on the same Wi-Fi. Cellular fallback needs a relay configured for this site.';
-  }
-  private connected(c: DataConnection) {
-    this.joined = true; this.active = c; this.lastSeen = Date.now();
-    this.events.clear(); this.events.state('connected');
-    // Keep rendezvous online; authenticated third browsers receive a full-room response.
-    // When either participant leaves, the remaining browser can claim the same room again.
-    this.heartbeat = setInterval(() => {
-      if (Date.now() - this.lastSeen > 16000) { this.retry('The other person went offline. Waiting for them to return.'); return; }
-      void this.send(c, { type: 'ping' });
-    }, 3000);
-  }
-  private async send(c: DataConnection, msg: Message) {
-    if (this.disposed || !this.key || !this.peer || !c.open || this.pendingSend > 8 || c.dataChannel?.bufferedAmount > 32768) return;
-    const created = Date.now();
-    const seq = ++this.sent;
-    const key = this.key;
-    const aad = encoder.encode(`${this.identity}:${c.peer}`);
-    this.pendingSend++;
+  private async pack(message: Message): Promise<string> {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const bytes = encoder.encode(JSON.stringify({ ...message, seq: ++this.sent, at: Date.now() }));
     try {
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const bytes = encoder.encode(JSON.stringify({ ...msg, seq, at: created }));
-      const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, bytes);
-      bytes.fill(0);
-      if (this.disposed || !c.open || (msg.type === 'stroke' && Date.now() - created > 200)) return;
-      // Send directly to the data channel: never enqueue a drawing in PeerJS's retry buffer.
-      c.dataChannel.send(`${encode(iv)}.${encode(new Uint8Array(encrypted))}`);
-    } catch { /* Transient data is dropped rather than saved for replay. */ }
-    finally { this.pendingSend--; }
+      const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv,
+        additionalData: encoder.encode(`${this.session}:${this.identity}:${this.partner}`) }, this.key!, bytes);
+      return `${encode(iv)}.${encode(new Uint8Array(encrypted))}`;
+    } finally { bytes.fill(0); }
   }
-  private async unpack(c: DataConnection, raw: string): Promise<Message | null> {
-    if (!this.key || !this.peer) return null;
-    const parts = raw.split('.'); if (parts.length !== 2 || parts[0].length !== 16) return null;
-    const iv = decode(parts[0]);
-    const bytes = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: encoder.encode(`${c.peer}:${this.identity}`) }, this.key, decode(parts[1]));
-    const msg: Message = JSON.parse(decoder.decode(bytes));
-    new Uint8Array(bytes).fill(0);
-    if (!Number.isSafeInteger(msg.seq) || msg.seq! <= (this.received.get(c) || 0) || !Number.isFinite(msg.at)) return null;
-    this.received.set(c, msg.seq!); return msg;
+  private async makePackets() {
+    if (!this.session || !this.partner || !this.key || this.disposed) return [];
+    const messages: Message[] = [];
+    if (!this.joined || performance.now() - this.lastPresence >= 1000) {
+      messages.push({ type: 'hello', away: this.hidden }); this.lastPresence = performance.now();
+    }
+    if (this.clearPending) { messages.push({ type: 'clear' }); this.clearPending = false; }
+    const drawing = this.drawing; this.drawing = undefined;
+    if (drawing && this.joined && !this.hidden) {
+      const now = performance.now();
+      const points = [...drawing.points].filter(entry => now - entry[1] < 300).map(entry => entry[0]);
+      if (points.length) messages.push({ type: 'stroke', points, color: drawing.color, ttl: drawing.ttl });
+    }
+    const epoch = this.epoch, clearEpoch = this.clearEpoch;
+    const packets: string[] = [];
+    for (const message of messages) {
+      const packet = await this.pack(message);
+      if (epoch !== this.epoch || this.disposed) return [];
+      if (message.type !== 'stroke' || clearEpoch === this.clearEpoch) packets.push(packet);
+    }
+    return packets;
+  }
+  private async receive(raw: string, discardStrokes = false) {
+    if (!this.key || raw.length > 5000) return;
+    const parts = raw.split('.'); if (parts.length !== 2 || parts[0].length !== 16) return;
+    const epoch = this.epoch;
+    const bytes = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(parts[0]),
+      additionalData: encoder.encode(`${this.session}:${this.partner}:${this.identity}`) }, this.key, decode(parts[1]));
+    let msg: Message;
+    try { msg = JSON.parse(decoder.decode(bytes)); } finally { new Uint8Array(bytes).fill(0); }
+    if (epoch !== this.epoch || this.disposed || !msg || !Number.isSafeInteger(msg.seq) || msg.seq! <= this.received || !Number.isFinite(msg.at)) return;
+    this.received = msg.seq!;
+    if (msg.type === 'hello') {
+      if (!this.joined) {
+        this.offset = Date.now() - msg.at!;
+        this.joined = true; this.events.clear(); this.state('connected');
+        // Authenticate in both directions even if our first hello was lost.
+        this.lastPresence = 0;
+      }
+      this.lastSeen = performance.now(); this.events.away(!!msg.away); return;
+    }
+    if (!this.joined) return;
+    this.lastSeen = performance.now();
+    if (msg.type === 'clear') { this.drawing = undefined; this.events.clear(); }
+    else if (msg.type === 'presence') this.events.away(!!msg.away);
+    else if (msg.type === 'stroke' && !this.hidden && !discardStrokes) {
+      const age = Math.max(0, Date.now() - (msg.at! + this.offset));
+      if (!Array.isArray(msg.points) || msg.points.length > 120 || !msg.points.every(p => Number.isInteger(p) && p >= 0 && p < 2016) || !Number.isInteger(msg.color) || msg.color! < 0 || msg.color! > 5 || ![1000, 2000, 3000].includes(msg.ttl!) || age >= msg.ttl!) return;
+      this.events.stroke({ points: msg.points, color: msg.color!, ttl: msg.ttl! - age });
+    }
+  }
+  private async poll() {
+    if (this.disposed) return;
+    let delay = 100;
+    const controller = new AbortController(); this.request = controller;
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    try {
+      const packets = await this.makePackets();
+      if (this.disposed) return;
+      const epoch = this.epoch, clearEpoch = this.clearEpoch, discardIncoming = this.discardIncoming;
+      const response = await fetch(this.endpoint, { method: 'POST', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
+        headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ action: 'poll', room: this.roomHash, token: this.token, id: this.identity, session: this.session, packets }) });
+      if (!response.ok) throw new Error('relay_unavailable');
+      const reply: Reply = await response.json();
+      if (this.disposed || epoch !== this.epoch) return;
+      if (reply.state === 'left') { this.end(false); return; }
+      if (reply.state === 'full') {
+        this.resetSession(); this.state('full', 'This room already has two people. Close another tab or leave on another device to make space.'); delay = 1200;
+      } else if (reply.state === 'waiting') {
+        const wasConnected = this.joined;
+        this.resetSession(); this.state('waiting', wasConnected ? 'The other person disconnected. Waiting for them to return.' : ''); delay = 500;
+      } else if (reply.state === 'connected' && /^[a-f0-9]{32}$/.test(reply.session || '') && /^[a-f0-9]{32}$/.test(reply.partner || '') && reply.partner !== this.identity) {
+        this.resetSession(reply.session!, reply.partner!);
+        if (!this.joined) this.state('joining', 'Making an encrypted connection through the server.');
+        if (Array.isArray(reply.packets) && reply.packets.length <= 8 && clearEpoch === this.clearEpoch) {
+          for (const packet of reply.packets) if (typeof packet === 'string') {
+            try { await this.receive(packet, discardIncoming); } catch { /* Discard unauthenticated data without logging it. */ }
+          }
+        }
+        if (this.joined && performance.now() - this.lastSeen > 5000) {
+          this.joined = false; this.drawing = undefined; this.events.clear(); this.state('joining', 'Waiting for the other browser to respond securely.');
+        }
+        if (clearEpoch === this.clearEpoch) this.discardIncoming = this.hidden;
+        delay = this.hidden ? 700 : 100;
+      } else throw new Error('invalid_relay_response');
+    } catch {
+      if (!this.disposed) {
+        this.resetSession(); this.drawing = undefined;
+        this.state('waiting', 'The private server connection is interrupted. Retrying automatically.'); delay = 1000;
+      }
+    } finally {
+      clearTimeout(timeout); if (this.request === controller) this.request = undefined;
+      if (!this.disposed) this.timer = setTimeout(() => { void this.poll(); }, delay);
+    }
   }
   draw(stroke: Stroke) {
-    if (!this.joined || !this.active || this.hidden) return;
-    if (this.drawing && (this.drawing.color !== stroke.color || this.drawing.ttl !== stroke.ttl)) this.flushDrawing();
-    if (!this.drawing) this.drawing = { points: new Set(), color: stroke.color, ttl: stroke.ttl, at: performance.now() };
-    // Touch hardware can deliver hundreds of samples per second. Merge fresh cells
-    // instead of dropping every sample after a per-second message quota.
+    if (!this.joined || this.hidden || this.disposed) return;
+    if (!this.drawing || this.drawing.color !== stroke.color || this.drawing.ttl !== stroke.ttl) {
+      this.drawing = { points: new Map(), color: stroke.color, ttl: stroke.ttl };
+    }
     for (const point of stroke.points) {
-      this.drawing.points.delete(point);
-      this.drawing.points.add(point);
+      this.drawing.points.delete(point); this.drawing.points.set(point, performance.now());
       if (this.drawing.points.size > 120) this.drawing.points.delete(this.drawing.points.values().next().value!);
     }
-    if (!this.drawingTimer) this.drawingTimer = this.later(() => this.flushDrawing(), 20);
   }
-  private discardDrawing() {
-    if (this.drawingTimer) { clearTimeout(this.drawingTimer); this.timers.delete(this.drawingTimer); }
-    this.drawingTimer = undefined;
-    this.drawing = undefined;
-  }
-  private flushDrawing() {
-    const drawing = this.drawing;
-    this.discardDrawing();
-    if (!drawing || !this.joined || !this.active || this.hidden || performance.now() - drawing.at > 100) return;
-    void this.send(this.active, { type: 'stroke', points: [...drawing.points], color: drawing.color, ttl: drawing.ttl });
-  }
-  blackout() { this.discardDrawing(); this.events.clear(); if (this.joined && this.active) void this.send(this.active, { type: 'clear' }); }
-  presence(away: boolean) {
-    this.hidden = away;
-    if (away) this.blackout();
-    if (this.joined && this.active) void this.send(this.active, { type: 'presence', away });
-  }
+  blackout() { this.clearEpoch++; this.drawing = undefined; this.clearPending = true; this.events.clear(); }
+  presence(away: boolean) { this.hidden = away; this.discardIncoming = true; this.blackout(); this.lastPresence = 0; }
   end(notify = true, detail = 'You left the room. Rejoin here or reopen the same link anytime.') {
     if (this.disposed) return;
-    this.discardDrawing();
-    if (notify && this.active) {
-      void this.send(this.active, { type: 'end' }).finally(() => this.destroy());
-    } else this.destroy();
-    this.events.clear(); this.events.state('ended', detail);
+    // All exits release the server seat, including local offline transitions.
+    void notify;
+    this.destroy(); this.state('ended', detail);
   }
   destroy() {
-    this.disposed = true;
+    if (this.disposed) return;
+    this.disposed = true; this.epoch++;
+    clearTimeout(this.timer); this.request?.abort();
     this.tabChannel?.close(); this.tabChannel = undefined;
-    this.stopTransport();
-    this.key = undefined;
+    // keepalive lets pagehide release the seat; a server tombstone rejects late in-flight polls.
+    if (this.roomHash && this.endpoint) void fetch(this.endpoint, { method: 'POST', keepalive: true, credentials: 'omit', referrerPolicy: 'no-referrer',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'leave', room: this.roomHash, token: this.token, id: this.identity }) }).catch(() => undefined);
+    this.key = undefined; this.drawing = undefined; this.joined = false;
+    this.events.clear(); this.events.away(false);
   }
 }

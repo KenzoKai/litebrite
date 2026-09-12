@@ -14,6 +14,7 @@ if ($origin !== '' && !in_array($origin, $allowed, true)) { http_response_code(4
 if ($origin !== '') { header('Access-Control-Allow-Origin: ' . $origin); header('Vary: Origin'); }
 header('Access-Control-Allow-Headers: Content-Type');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+header('Access-Control-Max-Age: 600');
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 function respond($data, $status = 200) { http_response_code($status); echo json_encode($data); exit; }
 if (!function_exists('shmop_open')) respond(['error' => 'memory_unavailable'], 503);
@@ -56,6 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   } else {
     $key = $data['room']; $token = $data['token']; $id = $data['id'];
     if ($data['action'] === 'leave') {
+      if (!isset($state[$key]) && count($state) < 16) $state[$key] = ['session' => '', 'members' => [], 'retired' => []];
       if (isset($state[$key])) {
         $state[$key]['retired'][$token] = $now + 15000;
         $state[$key]['retired'] = array_slice($state[$key]['retired'], -32, null, true);

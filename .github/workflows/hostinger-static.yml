@@ -23,14 +23,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-        env:
-          VITE_TURN_URLS: ${{ secrets.VITE_TURN_URLS }}
-          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
-          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
       - name: Verify static entrypoint
         run: |
           test -f dist/index.html
           test -f dist/.htaccess
+          test -f dist/relay.php
           test -d dist/assets
           if grep -q '/src/main.tsx' dist/index.html; then
             echo 'Uncompiled source entrypoint in build output'

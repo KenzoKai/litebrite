@@ -1,95 +1,63 @@
 # Afterglow
 
-A standard **React + Vite** app: a two-person, ephemeral Lite-Brite communication board. Share a reusable room link, draw with a mouse or touch screen, and watch every light disappear after 1–3 seconds.
+A React + Vite light board for two people. Share a reusable room link, draw with a finger, pen, or mouse, and watch lights fade after 1–3 seconds.
 
-## Run
+## Connection and privacy
 
-Requires Node 22.13+ (Node 24 recommended).
+All current clients communicate through `https://litebrite.it/relay.php` using HTTPS. **There is no WebRTC, STUN, TURN, external signaling, or direct-connection fallback.** Participants receive random session identities, never each other's IP addresses. The server and hosting provider still see connection IPs and may retain infrastructure metadata; this is not an anonymity service.
+
+The room link keeps a random 256-bit secret after `#room=`. The browser imports it as a non-extractable AES-GCM key. The relay receives a domain-separated SHA-256 capability hash, not the secret or original room ID. It sees only ciphertext and random client/session identifiers. Directional client IDs and a fresh pair-session ID are authenticated with each encrypted message. Both browsers verify an encrypted hello before showing Connected. Sequence numbers reject replays. A host that serves malicious JavaScript or a compromised browser is outside this protection.
+
+There are no accounts, database, application request logs, analytics, cookies, local storage, or drawing history. The PHP relay holds at most eight encrypted packets per recipient in a bounded shared-memory segment. Undelivered ciphertext expires after 800ms and is removed on the next request; delivery consumes packets once. No ciphertext is written to application files. An empty lockfile coordinates PHP workers. The OS/provider can manage RAM and logs independently; forensic erasure and zero infrastructure logging are not guaranteed.
+
+Session membership expires after 12 seconds without a poll. Leaving clears the queue and changes the pair session; a 15-second tombstone rejects late polls from the departed client. A new participant cannot receive an earlier pair's packets. The relay supports up to 16 simultaneous rooms, bounds request size and memory, and limits polling per member. If the relay fails or reaches capacity, clients clear the board and retry rather than exposing IPs through another transport.
+
+Browser drawing batches are bounded to 120 fresh cells and discarded after 300ms if sending stalls. Hidden pages discard incoming drawings. Blackout, leaving, and connection failures clear transient state. Browser memory contains up to 2,016 fading pegs, never a saved transcript. Fading cannot prevent screenshots, screen recordings, or a recipient copying what is visible.
+
+Room links remain reusable and may be saved in browser history, bookmarks, clipboard, or sharing apps. Anyone with the full link can occupy an available spot. Additional tabs/devices count as participants. Same-origin tabs coordinate without persistent storage. Create a different room for a new link; old links are not revoked.
+
+**Both participants must reload after upgrading from the old peer-to-peer version.** Old pages cannot communicate with the relay-only version and continue running their previously loaded code until closed/reloaded.
+
+## Local development
+
+Requires Node 22.13+ (24 recommended), PHP 8.3+ with `shmop`, and Playwright Chromium for browser tests.
 
 ```sh
 npm ci
+# First terminal (development server emits request metadata to its terminal):
+php -S 127.0.0.1:5184 -t public
+# Second terminal:
 npm run dev
 ```
 
-Open the printed local URL. Internet access is required to pair browsers. The deployed site uses HTTPS; local development uses localhost. To use a phone, use the deployed HTTPS URL rather than an insecure LAN address.
+Vite proxies `/relay.php` to the local PHP process. For multiple PHP workers on supported systems, set `PHP_CLI_SERVER_WORKERS=4` before starting PHP. The relay's application logging is disabled; production web-server/provider access logging must be managed separately. Use the deployed HTTPS site for phones; plain LAN HTTP cannot use WebCrypto.
 
-## Deploy on Hostinger
+## Hostinger deployment
 
-### Existing PHP/HTML website (Advanced → GIT)
+Use the PHP/HTML website's **Advanced → GIT** deployment, repository `KenzoKai/litebrite`, branch **`codex/hostinger`**, destination **`public_html`**. The GitHub Action builds each push to `main` and updates the generated branch with `dist/`, including `relay.php` and `.htaccess`. Wait for the build to finish before redeploying in hPanel; auto-deployment is an independent Hostinger setting. Do not deploy uncompiled `main` directly into `public_html`.
 
-The existing `white-oyster-665886.hostingersite.com` site uses Hostinger's file-copy Git deployment into `public_html`. This flow does **not** run npm/Vite; deploying `main` directly displays a blank page because browsers cannot run `/src/main.tsx`.
+`https://litebrite.it/relay.php` must execute PHP with shared memory available across workers. Its GET health response reports `{"transport":"https-memory","ready":true}`. A static host alone cannot run the relay. Static copies of the frontend at the permitted Hostinger/Sites origins use the same canonical relay endpoint and therefore share the same rooms. No TURN account, API key, database, or Node server is needed.
 
-For this flow select branch **`codex/hostinger`**, with destination **`public_html`**. The GitHub Actions workflow **Build Hostinger site** compiles every push to `main` and updates that branch with only the deployable contents of `dist`, including `.htaccess`. Wait for the workflow to finish before clicking Redeploy in Hostinger. The existing Hostinger auto-deployment preference is independent of this build workflow.
+The relay only accepts browser origins explicitly listed in `public/relay.php`. When moving the canonical domain, update the endpoint in `app/connection.ts`, update that allowlist, deploy the relay, and retest. Do not enable direct connections as a fallback. Security headers are supplied in `.htaccess` and `_headers`; verify your host applies them. Browser URL fragments are never transmitted as part of HTTP URLs.
 
-Keep development on `main`; do not edit generated files on `codex/hostinger`. That branch serves the same React + Vite app without requiring a Node process or build step on Hostinger.
+## Drawing controls
 
-### Node.js / Vite web app hosting
-
-In Hostinger’s **Deploy Web App → Import Git Repository** flow, select `KenzoKai/litebrite`, branch `main`, and these build settings:
-
-| Setting | Value |
-| --- | --- |
-| Framework | **Vite** (React frontend) |
-| Node.js | **24.x** |
-| Root directory | Repository root (`.`) |
-| Package manager | npm |
-| Install command, if shown | `npm ci` |
-| Build command | `npm run build` |
-| Output directory | `dist` |
-| Environment variables | None required |
-| Application entry / start command | Not needed for the Vite frontend preset |
-
-If an earlier import reported “Unsupported framework,” import or redeploy the current `main` commit and select Vite. The repository has a root `index.html`, `vite.config.ts`, and standard Vite package scripts. It no longer depends on Vinext, Next.js, Wrangler, or Cloudflare runtime bindings.
-
-Hostinger serves the generated static files. No application backend, server process, database, or credentials are needed. HTTPS is required for invitation cryptography and reliable clipboard support. The signaling/relay services still require internet access.
-
-For ordinary static hosting instead: run `npm ci && npm run build`, then upload the **contents of `dist/`** to `public_html`, including the `.htaccess` file. For Hostinger’s Node.js ZIP-import flow, upload the source project (root `package.json`, lockfile, and `index.html`), excluding `node_modules`, `.git`, and `outputs`.
-
-Preview the built files locally with `npm run preview` (testing only, not a production server).
-
-Official reference: [Hostinger deployment guide](https://www.hostinger.com/support/how-to-deploy-a-nodejs-website-in-hostinger/).
-
-## Behavior
-
-- Extra browsers/devices count toward the two-person limit. A full room is labeled explicitly. BroadcastChannel coordinates tabs of the same browser and origin: opening a room in a new tab releases the older tab, without cookies or storage.
-- Two people per room. Either browser can arrive first and practice drawing before pairing; practice is cleared and never replayed to the guest.
-- Room links carry a random rendezvous ID and 256-bit secret in the URL fragment. Fragments are not sent in HTTP requests. The link stays in both address bars for refreshes and bookmarks, and can be retained by browser history. No application storage is used.
-- The first browser claims the rendezvous ID; the second connects with a random peer ID and proves possession of the secret. Signaling remains online. Additional browsers receive an authenticated room-full response and wait until a space opens. Anyone with the link can enter an available space; it is not tied to two named identities.
-- AES-GCM authenticates/encrypts all application messages with direction-specific peer IDs as additional authenticated data. WebRTC transport also encrypts data. Sequence numbers reject old/replayed messages within the connection.
-- The board holds at most 2,016 pegs in RAM. Every peg expires within 1–3 seconds. Receiver-side expiry accounts for transit age using a handshake clock offset. Already expired packets are discarded.
-- Blackout / Escape clears both boards. Visibility changes clear both boards and mark the participant away. Incoming strokes are discarded while the page is hidden. No history is sent on return.
-- Room links do not expire. Both browsers can leave and return using the same link, in either order. A heartbeat detects silent connection loss, clears the board, and retries rendezvous. Offline/online transitions, reloads, and restored pages rejoin the same room. Leaving explicitly stops that browser until Rejoin or reload. No strokes are replayed. Create a different room to move to a new secret link; this does not revoke the old link.
-- A viewport-sized workspace with visible 44px touch controls on portrait/landscape phones, tablets, and desktops; safe-area insets and dynamic viewport height accommodate mobile browser chrome.
-- Shared 56×36 logical coordinates are mapped with uniform scaling and letterboxing, so drawing proportions are preserved across different aspect ratios. Device pixel ratio only controls raster sharpness and never affects transmitted coordinates. Existing clients remain wire-compatible.
-- Local 1–4× zoom, two-finger pinch/pan, a Move tool, and Fit reset. Zooming and resizing preserve unexpired pegs without replaying or persisting strokes. Empty margins do not draw stray edge lines.
-- Six colors, touch/pen/mouse input, accessible color/fade controls, native sharing where available, clipboard sharing with manual-copy fallback. Keyboard users can focus the board, move with arrows, and light pegs with Space; Shift+arrows draws a line.
-- An event-driven canvas sleeps when no lights need repainting, follows display-density changes, and bounds the backing raster to eight million pixels.
-
-## Privacy and limits
-
-There is no application database, analytics, message logging, cookies, browser storage, or saved drawing history. Private keys are non-extractable CryptoKeys in memory. Ending a room releases references, but JavaScript cannot promise forensic RAM erasure. The recipient, browser, OS, clipboard, or sharing app may retain what is visible or explicitly copied/shared.
-
-PeerJS Cloud performs signaling and Google provides STUN. **The default PeerJS TURN hostnames no longer resolve; they are explicitly overridden. No working TURN relay is configured by default.** Direct connections work where networks permit them, but cellular/restrictive networks may require TURN. A full room is a separate issue: close extra browsers/devices to release the two slots.
-
-Configure an account-owned TURN service with browser-facing credentials using `VITE_TURN_URLS` (comma-separated `turn:`/`turns:` URLs), `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL`. Prefer a provider offering TLS/TCP on port 443 as well as UDP. Set these three GitHub Actions repository secrets for the Hostinger static build; for a Vite web-app deployment, set them in its build environment. Rebuild/redeploy after configuration. Vite embeds these relay credentials in public JavaScript, as WebRTC requires; use limited, scoped client credentials, never a provider management API key. The room encryption key is separate and remains in the fragment.
-
-The website host, signaling service, and any configured relay may retain IP addresses and connection metadata; **zero infrastructure logging is not guaranteed**. Direct WebRTC may expose a participant's IP to the other participant. No relay or signaling provider receives plaintext strokes or the room secret. Availability and restrictive-network connectivity depend on those services.
-
-Fading reduces lingering content. It cannot prevent a short word from being read, screenshots, video, a malicious recipient, or a compromised device. This is an ephemeral drawing app, not an anonymity service or a certified secure messenger.
+Both screens share a 56×36 logical board with uniform scaling, independent of screen size or pixel density. Native touch events drive phone drawing; mouse/pen use pointer events. A brief second contact releases back into drawing when one finger remains. Pinch/pan, 1–4× zoom, Move, and Fit change only the local view. Six colors and 1/2/3-second fades are available. Keyboard controls: arrows, Space, Shift+arrows, and Escape for Blackout.
 
 ## Validation
 
 ```sh
-npx tsc --noEmit
-node tests/board-geometry.mjs
-node tests/responsive-board.mjs
-node tests/live-smoke.mjs
+npm run build
+npm run lint
+npm run test:geometry
+node tests/relay-api.mjs
+node tests/relay-crypto.mjs
+node tests/continuous-strokes.mjs
+TEST_BASE_URL=http://localhost:5173/ node tests/continuous-touch.mjs
+TEST_BASE_URL=http://localhost:5173/ node tests/touch-recovery.mjs
+TEST_BASE_URL=http://localhost:5173/ node tests/live-smoke.mjs
 ```
 
-The live smoke test uses separate Chromium contexts, including a touch-enabled phone viewport, and real PeerJS signaling/WebRTC. It verifies pairing, transmission, complete fading, touch, blackout, Escape, third-person rejection, disconnect cleanup, reusable links, reconnection, empty browser storage, and responsive overflow. Set `TEST_BASE_URL` to an authorized local preview and optionally `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for a custom Chromium binary. Install Playwright Chromium with `npx playwright install chromium` if needed. Test screenshots are ignored in `outputs/`.
+`RELAY_TEST_URL` overrides the PHP endpoint for relay tests. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` selects a Chromium binary; otherwise install it with `npx playwright install chromium`. Tests create isolated, random rooms and do not use existing user rooms. The sustained-touch test forbids WebRTC and WebSocket construction and verifies two-way drawing and expiry through the relay. The backend test checks admission, identity binding, one-time delivery, packet expiry, and stale-session isolation. Screenshots in `outputs/` are ignored.
 
-The privacy-safe optional WebMCP tool `blackout_board` clears the same board as the UI and never exposes strokes or invitation secrets.
-
-## Hosting
-
-The same `dist/` output also supports the existing Sites deployment via `.openai/hosting.json`. This file is only deployment metadata; Hostinger does not need it to build or run the app. `public/_headers` provides compatible static-host header rules; `public/.htaccess` provides equivalent rules for Apache/OpenLiteSpeed. The document itself declares a no-referrer policy. Verify host-specific HTTP header support in your hosting configuration. No OpenAI API key is required.
+The optional WebMCP tool `blackout_board` clears the board and never exposes drawings or invitation secrets.

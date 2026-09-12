@@ -14,6 +14,6 @@ export default defineConfig({
   plugins: [react()],
   resolve: { alias: { '@': fileURLToPath(new URL('.', import.meta.url)) } },
   build: { outDir: 'dist', sourcemap: false },
-  server: { headers },
+  server: { headers, proxy: { '/relay.php': 'http://127.0.0.1:5184' } },
   preview: { headers },
 });
