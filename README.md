@@ -51,6 +51,7 @@ Official reference: [Hostinger deployment guide](https://www.hostinger.com/suppo
 
 ## Behavior
 
+- Extra browsers/devices count toward the two-person limit. A full room is labeled explicitly. BroadcastChannel coordinates tabs of the same browser and origin: opening a room in a new tab releases the older tab, without cookies or storage.
 - Two people per room. Either browser can arrive first and practice drawing before pairing; practice is cleared and never replayed to the guest.
 - Room links carry a random rendezvous ID and 256-bit secret in the URL fragment. Fragments are not sent in HTTP requests. The link stays in both address bars for refreshes and bookmarks, and can be retained by browser history. No application storage is used.
 - The first browser claims the rendezvous ID; the second connects with a random peer ID and proves possession of the secret. Signaling remains online. Additional browsers receive an authenticated room-full response and wait until a space opens. Anyone with the link can enter an available space; it is not tied to two named identities.
@@ -68,7 +69,11 @@ Official reference: [Hostinger deployment guide](https://www.hostinger.com/suppo
 
 There is no application database, analytics, message logging, cookies, browser storage, or saved drawing history. Private keys are non-extractable CryptoKeys in memory. Ending a room releases references, but JavaScript cannot promise forensic RAM erasure. The recipient, browser, OS, clipboard, or sharing app may retain what is visible or explicitly copied/shared.
 
-PeerJS Cloud performs signaling, Google provides STUN, and the PeerJS TURN service can relay encrypted traffic for networks needing relay traversal. They do not receive the invitation secret or plaintext strokes. The website host and third-party connection services may retain IP addresses and connection metadata; **zero infrastructure logging is not guaranteed**. Direct WebRTC may expose a participant's IP to the other participant. Availability and restrictive-network connectivity depend on those third-party services.
+PeerJS Cloud performs signaling and Google provides STUN. **The default PeerJS TURN hostnames no longer resolve; they are explicitly overridden. No working TURN relay is configured by default.** Direct connections work where networks permit them, but cellular/restrictive networks may require TURN. A full room is a separate issue: close extra browsers/devices to release the two slots.
+
+Configure an account-owned TURN service with browser-facing credentials using `VITE_TURN_URLS` (comma-separated `turn:`/`turns:` URLs), `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL`. Prefer a provider offering TLS/TCP on port 443 as well as UDP. Set these three GitHub Actions repository secrets for the Hostinger static build; for a Vite web-app deployment, set them in its build environment. Rebuild/redeploy after configuration. Vite embeds these relay credentials in public JavaScript, as WebRTC requires; use limited, scoped client credentials, never a provider management API key. The room encryption key is separate and remains in the fragment.
+
+The website host, signaling service, and any configured relay may retain IP addresses and connection metadata; **zero infrastructure logging is not guaranteed**. Direct WebRTC may expose a participant's IP to the other participant. No relay or signaling provider receives plaintext strokes or the room secret. Availability and restrictive-network connectivity depend on those services.
 
 Fading reduces lingering content. It cannot prevent a short word from being read, screenshots, video, a malicious recipient, or a compromised device. This is an ephemeral drawing app, not an anonymity service or a certified secure messenger.
 

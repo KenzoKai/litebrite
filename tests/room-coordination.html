@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><title>Afterglow tab verification</title><pre id="result">Checking duplicate-tab handoff…</pre>
+<script type="module">
+import {LightRoom,parseInvite} from '/app/connection.ts';
+const out=document.querySelector('#result');let link, aState,bState;
+const noop=()=>{}; const events=(which)=>({state:(s)=>{if(which==='a')aState=s;else bState=s;},invite:(s)=>{if(s)link=s;},stroke:noop,clear:noop,away:noop});
+const a=new LightRoom(events('a')),b=new LightRoom(events('b'));
+await a.start();await new Promise(r=>setTimeout(r,500));
+await b.start(parseInvite(new URL(link).hash));await new Promise(r=>setTimeout(r,1500));
+const passed=aState==='ended' && bState!=='ended' && bState!=='error';
+out.textContent=JSON.stringify({status:passed?'passed':'failed',olderTab:aState,newerTab:bState,storageUnchanged:localStorage.length===0&&sessionStorage.length===0},null,2);a.destroy();b.destroy();
+</script>

@@ -1,7 +1,8 @@
 import type { Peer, DataConnection } from 'peerjs';
 import type { Stroke } from './board';
+import { createIceConfig, hasTurnRelay } from './ice-config';
 
-export type RoomState = 'idle' | 'creating' | 'waiting' | 'joining' | 'connected' | 'ended' | 'error';
+export type RoomState = 'idle' | 'creating' | 'waiting' | 'full' | 'joining' | 'connected' | 'ended' | 'error';
 type Events = {
   state: (state: RoomState, detail?: string) => void;
   invite: (url: string) => void;
@@ -42,6 +43,9 @@ export class LightRoom {
   private roomId = '';
   private PeerClass?: typeof Peer;
   private epoch = 0;
+  private iceConfig?: RTCConfiguration;
+  private iceExpires = 0;
+  private tabChannel?: BroadcastChannel;
   private hidden = false;
   private burst = 0;
   private burstAt = 0;
@@ -66,12 +70,30 @@ export class LightRoom {
       const { default: Peer } = await import('peerjs');
       if (this.disposed) return;
       this.PeerClass = Peer;
+      this.iceConfig = await createIceConfig();
+      this.iceExpires = Date.now() + 23 * 3600000;
+      if (this.disposed) return;
       // Keep only the reusable capability link, never drawing history. Fragments stay off HTTP requests.
       const url = `${location.origin}${location.pathname}#room=${this.roomId}.${secret}`;
       history.replaceState(null, '', url);
       this.events.invite(url);
+      this.claimBrowserTab();
       this.openPeer(false);
     } catch { this.fail('A secure room could not be created. Check your browser and reopen this room link.'); }
+  }
+
+  private claimBrowserTab() {
+    if (typeof BroadcastChannel === 'undefined') return;
+    // Coordinate only live tabs in this browser. No storage, drawing data, or room key.
+    const stamp = `${String(Date.now()).padStart(16, '0')}:${crypto.randomUUID()}`;
+    const channel = new BroadcastChannel(`afterglow-room:${this.roomId}`);
+    this.tabChannel = channel;
+    channel.onmessage = ({ data }) => {
+      if (!data || data.type !== 'claim' || typeof data.stamp !== 'string' || !/^[0-9]{16}:[a-f0-9-]{36}$/.test(data.stamp)) return;
+      if (data.stamp > stamp) this.end(true, 'This room is open in another tab in this browser. Use that tab, or rejoin here to move it back.');
+      else if (data.stamp < stamp) channel.postMessage({ type: 'claim', stamp });
+    };
+    channel.postMessage({ type: 'claim', stamp });
   }
 
   private stopTransport() {
@@ -87,10 +109,10 @@ export class LightRoom {
     this.events.clear(); this.events.away(false);
   }
 
-  private retry(detail = 'Reconnecting to this room. Keep this page open.') {
+  private retry(detail = 'Reconnecting to this room. Keep this page open.', full = false) {
     if (this.disposed) return;
     this.stopTransport();
-    this.events.state('waiting', detail);
+    this.events.state(full ? 'full' : 'waiting', detail);
     this.later(() => this.openPeer(false), 2000 + Math.random() * 1500);
   }
 
@@ -98,12 +120,19 @@ export class LightRoom {
     if (this.disposed || !this.PeerClass) return;
     this.stopTransport();
     const epoch = this.epoch;
+    if (Date.now() >= this.iceExpires) {
+      void createIceConfig().then(config => {
+        if (this.disposed || epoch !== this.epoch) return;
+        this.iceConfig = config; this.iceExpires = Date.now() + 23 * 3600000; this.openPeer(guest);
+      }).catch(() => { if (!this.disposed && epoch === this.epoch) this.retry(); });
+      return;
+    }
     const current = () => !this.disposed && epoch === this.epoch;
     const id = guest ? 'lb-' + crypto.randomUUID().replace(/-/g, '') : this.roomId;
     this.identity = id;
     // PeerJS arbitrates one rendezvous owner. Whichever browser arrives first owns it;
     // another browser connects with a random identity. No persistent server room is needed.
-    const peer = new this.PeerClass(id, { debug: 0, logFunction: () => undefined, secure: true });
+    const peer = new this.PeerClass(id, { debug: 0, logFunction: () => undefined, secure: true, config: this.iceConfig });
     this.peer = peer;
     const opening = this.later(() => this.retry('The connection service is unavailable. Retrying this room…'), 20000);
     peer.on('open', () => {
@@ -133,7 +162,7 @@ export class LightRoom {
     let queue = Promise.resolve(); let pending = 0;
     const timeout = this.later(() => {
       if (this.joined && this.active === c) return;
-      if (guest) this.retry('Waiting for the other browser. Retrying this room…');
+      if (guest) this.retry(this.networkHelp());
       else { if (this.active === c) this.active = undefined; c.close(); this.candidates.delete(c); }
     }, 25000);
     c.on('open', () => { if (current() && guest) void this.send(c, { type: 'hello' }); });
@@ -144,7 +173,7 @@ export class LightRoom {
         try {
           const msg = await this.unpack(c, raw);
           if (!msg || !current()) return;
-          if (guest && msg.type === 'full') { this.retry('This room already has two people. Waiting for a space…'); return; }
+          if (guest && msg.type === 'full') { this.retry('This room already has two people. Close another tab or leave on another device to make space.', true); return; }
           if (!guest && msg.type === 'hello' && this.active && this.active !== c) {
             await this.send(c, { type: 'full' });
             this.later(() => { this.candidates.delete(c); c.close(); }, 250);
@@ -184,8 +213,13 @@ export class LightRoom {
       if (this.active === c || guest) this.retry('The other person disconnected. Waiting for them to return.');
     });
     c.on('error', () => {
-      if (current() && (this.active === c || guest)) this.retry();
+      if (current() && (this.active === c || guest)) this.retry(this.networkHelp());
     });
+  }
+  private networkHelp() {
+    return hasTurnRelay()
+      ? 'The network connection failed. Retrying; keep both pages open.'
+      : 'These networks could not connect directly. Try both devices on the same Wi-Fi. Cellular fallback needs a relay configured for this site.';
   }
   private connected(c: DataConnection) {
     this.joined = true; this.active = c; this.lastSeen = Date.now();
@@ -245,6 +279,7 @@ export class LightRoom {
   }
   destroy() {
     this.disposed = true;
+    this.tabChannel?.close(); this.tabChannel = undefined;
     this.stopTransport();
     this.key = undefined;
   }
