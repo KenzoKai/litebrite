@@ -12,7 +12,7 @@ There are no accounts, database, application request logs, analytics, cookies, l
 
 Session membership expires after 12 seconds without a poll. Leaving clears the queue and changes the pair session; a 15-second tombstone rejects late polls from the departed client. A new participant cannot receive an earlier pair's packets. The relay supports up to 16 simultaneous rooms, bounds request size and memory, and limits polling per member. If the relay fails or reaches capacity, clients clear the board and retry rather than exposing IPs through another transport.
 
-Browser drawing packets carry at most 120 cells each, with up to eight packets per request. Up to 2,016 pending cells retain their individual colors and original fade deadlines; overflow drains on subsequent requests and expired cells are discarded. Sample ages travel inside the encryption so batching does not restart a light’s lifetime. Foreground polls target 100ms between request starts, without an extra pause after a slow response. Hidden pages discard incoming drawings. Blackout, leaving, and connection failures clear transient state. Browser memory contains up to 2,016 fading pegs, never a saved transcript. Fading cannot prevent screenshots, screen recordings, or a recipient copying what is visible.
+Browser drawing packets carry at most 120 cells each, with up to eight packets per request. Up to 2,016 pending cells retain their individual colors and original fade deadlines; overflow drains on subsequent requests and expired cells are discarded. Sample ages travel inside the encryption so batching does not restart a light’s lifetime. Foreground polls target 100ms between request starts, without an extra pause after a slow response. Hidden pages discard incoming drawings. Blackout, leaving, and connection failures clear transient state. Free drawing uses up to 2,016 fading pegs, never a saved transcript. Optional games keep their current board and chess rule state in browser RAM for the round; game lights do not fade. Switching games, Blackout/Clear game, hiding the page, disconnecting, or leaving removes that state. Games have no saved scores, move viewer, or resume history. Fading cannot prevent screenshots, screen recordings, or a recipient copying what is visible.
 
 Room links remain reusable and may be saved in browser history, bookmarks, clipboard, or sharing apps. Anyone with the full link can occupy an available spot. Additional tabs/devices count as participants. Same-origin tabs coordinate without persistent storage. Create a different room for a new link; old links are not revoked.
 
@@ -46,6 +46,12 @@ The relay only accepts browser origins explicitly listed in `public/relay.php`. 
 
 Both screens share a 56×36 logical board with uniform scaling, independent of screen size or pixel density. Native touch events drive phone drawing; mouse/pen use pointer events. A brief second contact releases back into drawing when one finger remains. Pinch/pan, 1–4× zoom, Move, and Fit change only the local view. Six colors and 1/2/3-second fades are available. Keyboard controls: arrows, Space, Shift+arrows, and Escape for Blackout.
 
+## Shared games
+
+Choose a mode above the board: **Chess**, **Tic-tac-toe**, or **Falling lights**, a cooperative falling-block game. Without a connected partner, games work as local practice. With two updated browsers, selecting a game switches both boards. Chess and tic-tac-toe assign Amber / White / X and Sky / Black / O; the UI identifies your side. Chess includes legal destinations, castling, en passant, promotion choice, checkmate, and draw detection through [chess.js](https://github.com/jhlywa/chess.js). Either player can start a fresh round. Falling lights uses one shared stack and score with a seven-piece bag, row clearing, ghost landing preview, next piece, increasing gravity, touch buttons, and keyboard controls.
+
+One browser, elected by the pair's random client identifiers, owns the rules and gravity. Encrypted snapshots of the current board replace older snapshots; the other browser retries numbered commands until acknowledged. Duplicates and stale moves are ignored. Game snapshots fit the existing relay limits and expire in the same 800ms server window. A generation counter carried by clears, game messages, and hellos prevents delayed snapshots from restoring a cleared game, even when a clear packet is lost. Gameplay cannot survive either browser leaving or a broken connection. No direct networking, server game storage, or logging is added. Both participants must reload after the update; older clients can still draw but cannot join games.
+
 ## Validation
 
 ```sh
@@ -56,6 +62,9 @@ node tests/relay-api.mjs
 node tests/relay-crypto.mjs
 node tests/relay-batching.mjs
 node tests/relay-pacing.mjs
+node tests/games.mjs
+node tests/games-crypto.mjs
+TEST_BASE_URL=http://localhost:5173/ node tests/games-browser.mjs
 node tests/continuous-strokes.mjs
 TEST_BASE_URL=http://localhost:5173/ node tests/continuous-touch.mjs
 TEST_BASE_URL=http://localhost:5173/ node tests/touch-recovery.mjs

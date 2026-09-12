@@ -7,8 +7,11 @@ type Events = {
   stroke: (stroke: Stroke) => void;
   clear: () => void;
   away: (away: boolean) => void;
+  game?: (data: unknown) => void;
+  gameReady?: (leader: boolean) => void;
+  gameReset?: () => void;
 };
-type Message = { type: 'hello' | 'stroke' | 'clear' | 'presence'; seq?: number; at?: number; points?: number[]; ages?: number[]; color?: number; ttl?: number; away?: boolean };
+type Message = { type: 'hello' | 'stroke' | 'clear' | 'presence' | 'game'; games?: number; generation?: number; payload?: unknown; seq?: number; at?: number; points?: number[]; ages?: number[]; color?: number; ttl?: number; away?: boolean };
 type Reply = { state: 'waiting' | 'full' | 'connected' | 'left'; partner?: string; session?: string; packets?: string[] };
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -51,6 +54,9 @@ export class LightRoom {
   private request?: AbortController;
   private tabChannel?: BroadcastChannel;
   private lastState = '';
+  private gamePayload?: unknown;
+  private gameGeneration = 0;
+  private gamesSupported = false;
   constructor(private events: Events) {}
 
   private state(state: RoomState, detail = '') {
@@ -93,6 +99,7 @@ export class LightRoom {
     this.epoch++; this.session = session; this.partner = partner;
     this.joined = false; this.received = 0; this.lastSeen = 0; this.lastPresence = 0;
     this.drawing.clear(); this.clearPending = false;
+    this.gamePayload = undefined; this.gameGeneration = 0; this.gamesSupported = false; this.events.gameReset?.();
     this.events.clear(); this.events.away(false);
   }
   private async pack(message: Message): Promise<string> {
@@ -108,9 +115,13 @@ export class LightRoom {
     if (!this.session || !this.partner || !this.key || this.disposed) return [];
     const messages: Message[] = [];
     if (!this.joined || performance.now() - this.lastPresence >= 1000) {
-      messages.push({ type: 'hello', away: this.hidden }); this.lastPresence = performance.now();
+      messages.push({ type: 'hello', away: this.hidden, games: 1, generation: this.gameGeneration }); this.lastPresence = performance.now();
     }
-    if (this.clearPending) { messages.push({ type: 'clear' }); this.clearPending = false; }
+    if (this.clearPending) { messages.push({ type: 'clear', generation: this.gameGeneration }); this.clearPending = false; }
+    if (this.gamesSupported && this.joined && !this.hidden && this.gamePayload !== undefined) {
+      messages.push({ type: 'game', generation: this.gameGeneration, payload: this.gamePayload });
+      this.gamePayload = undefined;
+    }
     // Keep each peg's latest state until its own fade deadline. A fast curve can
     // cross hundreds of cells between requests; never turn it into an oversized packet.
     if (this.joined && !this.hidden) {
@@ -133,7 +144,7 @@ export class LightRoom {
     for (const message of messages) {
       const packet = await this.pack(message);
       if (epoch !== this.epoch || this.disposed) return [];
-      if (message.type !== 'stroke' || clearEpoch === this.clearEpoch) packets.push(packet);
+      if (!['stroke', 'game'].includes(message.type) || clearEpoch === this.clearEpoch) packets.push(packet);
     }
     return packets;
   }
@@ -147,6 +158,15 @@ export class LightRoom {
     try { msg = JSON.parse(decoder.decode(bytes)); } finally { new Uint8Array(bytes).fill(0); }
     if (epoch !== this.epoch || this.disposed || !msg || !Number.isSafeInteger(msg.seq) || msg.seq! <= this.received || !Number.isFinite(msg.at)) return;
     this.received = msg.seq!;
+    if (msg.type === 'clear' || msg.type === 'game' || msg.type === 'hello') {
+      if (!Number.isSafeInteger(msg.generation) || msg.generation! < 0) { if (msg.type === 'game') return; }
+      else {
+        if (msg.generation! < this.gameGeneration) return;
+        if (msg.generation! > this.gameGeneration) {
+          this.gameGeneration = msg.generation!; this.gamePayload = undefined; this.events.gameReset?.();
+        }
+      }
+    }
     if (msg.type === 'hello') {
       if (!this.joined) {
         this.offset = Date.now() - msg.at!;
@@ -154,11 +174,13 @@ export class LightRoom {
         // Authenticate in both directions even if our first hello was lost.
         this.lastPresence = 0;
       }
+      if (msg.games === 1 && !this.gamesSupported) { this.gamesSupported = true; this.events.gameReady?.(this.identity < this.partner); }
       this.lastSeen = performance.now(); this.events.away(!!msg.away); return;
     }
     if (!this.joined) return;
     this.lastSeen = performance.now();
     if (msg.type === 'clear') { this.drawing.clear(); this.events.clear(); }
+    else if (msg.type === 'game' && this.gamesSupported && !this.hidden && !discardStrokes) this.events.game?.(msg.payload);
     else if (msg.type === 'presence') this.events.away(!!msg.away);
     else if (msg.type === 'stroke' && !this.hidden && !discardStrokes) {
       const age = Math.max(0, Date.now() - (msg.at! + this.offset));
@@ -205,6 +227,7 @@ export class LightRoom {
           }
         }
         if (this.joined && performance.now() - this.lastSeen > 5000) {
+          this.blackout(); this.gamesSupported = false;
           this.joined = false; this.drawing.clear(); this.events.clear(); this.state('joining', 'Waiting for the other browser to respond securely.');
         }
         if (clearEpoch === this.clearEpoch) this.discardIncoming = this.hidden;
@@ -230,7 +253,12 @@ export class LightRoom {
     }
   }
 
-  blackout() { this.clearEpoch++; this.drawing.clear(); this.clearPending = true; this.events.clear(); }
+  sendGame(payload: unknown) {
+    if (!this.joined || !this.gamesSupported || this.hidden || this.disposed) return;
+    if (JSON.stringify(payload).length <= 2600) this.gamePayload = payload;
+  }
+
+  blackout() { this.gameGeneration++; this.gamePayload = undefined; this.events.gameReset?.(); this.clearEpoch++; this.drawing.clear(); this.clearPending = true; this.events.clear(); }
   presence(away: boolean) { this.hidden = away; this.discardIncoming = true; this.blackout(); this.lastPresence = 0; }
   end(notify = true, detail = 'You left the room. Rejoin here or reopen the same link anytime.') {
     if (this.disposed) return;
@@ -247,6 +275,7 @@ export class LightRoom {
     if (this.roomHash && this.endpoint) void fetch(this.endpoint, { method: 'POST', keepalive: true, credentials: 'omit', referrerPolicy: 'no-referrer',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'leave', room: this.roomHash, token: this.token, id: this.identity }) }).catch(() => undefined);
     this.key = undefined; this.drawing.clear(); this.joined = false;
+    this.gamePayload = undefined; this.gamesSupported = false; this.events.gameReset?.();
     this.events.clear(); this.events.away(false);
   }
 }
