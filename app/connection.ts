@@ -39,7 +39,9 @@ export class LightRoom {
   private received = new WeakMap<DataConnection, number>();
   private offsets = new WeakMap<DataConnection, number>();
   private lastSeen = 0;
-  private guest = false;
+  private roomId = '';
+  private PeerClass?: typeof Peer;
+  private epoch = 0;
   private hidden = false;
   private burst = 0;
   private burstAt = 0;
@@ -52,66 +54,102 @@ export class LightRoom {
   }
   private fail(detail: string) { this.destroy(); this.events.state('error', detail); }
   async start(invite?: { host: string; secret: string }) {
-    this.guest = !!invite;
     this.events.state(invite ? 'joining' : 'creating');
     try {
       if (!window.isSecureContext || !crypto.subtle || !window.RTCPeerConnection) {
         this.fail('This browser cannot make a secure connection. Open this link in an up-to-date Safari, Chrome, or Firefox browser.'); return;
       }
       const secret = invite?.secret || encode(crypto.getRandomValues(new Uint8Array(32)));
+      this.roomId = invite?.host || 'lb-' + crypto.randomUUID().replace(/-/g, '');
       this.key = await crypto.subtle.importKey('raw', decode(secret), 'AES-GCM', false, ['encrypt', 'decrypt']);
       if (this.disposed) return;
       const { default: Peer } = await import('peerjs');
       if (this.disposed) return;
-      const id = 'lb-' + crypto.randomUUID().replace(/-/g, '');
-      this.identity = id;
-      // Bundled PeerJS configuration includes STUN and TURN for cross-network connectivity.
-      // No drawing, invitation secret, or encryption key is sent to the signaling service.
-      this.peer = new Peer(id, { debug: 0, logFunction: () => undefined, secure: true });
-      const opening = this.later(() => this.fail('The connection service is unavailable. Check your connection and try a new invitation.'), 20000);
-      this.peer.on('open', () => {
-        clearTimeout(opening); this.timers.delete(opening);
-        if (this.disposed) return;
-        if (invite) {
-          this.attach(this.peer!.connect(invite.host, { serialization: 'raw', reliable: false }), true);
-        } else {
-          this.events.invite(`${location.origin}${location.pathname}#room=${id}.${secret}`);
-          this.events.state('waiting');
-          this.later(() => { if (!this.joined) this.fail('This invitation expired after 10 minutes. Create a fresh one to connect.'); }, 600000);
-        }
-      });
-      this.peer.on('connection', c => {
-        if (this.disposed || this.guest || this.active || this.candidates.size >= 4) { c.close(); return; }
-        this.attach(c, false);
-      });
-      this.peer.on('error', err => {
-        if (this.disposed || this.joined) return;
-        if (err.type === 'peer-unavailable') this.fail('This invitation is used, expired, or its owner has left. Ask them for a fresh link.');
-        else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') this.fail('The connection was interrupted. Check your network, then try a fresh invitation.');
-        else if (this.guest) this.fail('These browsers could not connect. Try another network or an up-to-date browser, then use a fresh invitation.');
-      });
-      this.peer.on('disconnected', () => {
-        if (!this.disposed && !this.joined) this.fail('Your invitation went offline. Create a fresh link to try again.');
-      });
-    } catch { this.fail('A secure room could not be created. Try an up-to-date browser and a fresh invitation.'); }
+      this.PeerClass = Peer;
+      // Keep only the reusable capability link, never drawing history. Fragments stay off HTTP requests.
+      const url = `${location.origin}${location.pathname}#room=${this.roomId}.${secret}`;
+      history.replaceState(null, '', url);
+      this.events.invite(url);
+      this.openPeer(false);
+    } catch { this.fail('A secure room could not be created. Check your browser and reopen this room link.'); }
+  }
+
+  private stopTransport() {
+    // Invalidate callbacks before closing transports; stale attempts must never end a new connection.
+    this.epoch++;
+    this.joined = false;
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear(); clearInterval(this.heartbeat);
+    this.active = undefined;
+    for (const c of this.candidates) c.close();
+    this.candidates.clear();
+    this.peer?.destroy(); this.peer = undefined;
+    this.events.clear(); this.events.away(false);
+  }
+
+  private retry(detail = 'Reconnecting to this room. Keep this page open.') {
+    if (this.disposed) return;
+    this.stopTransport();
+    this.events.state('waiting', detail);
+    this.later(() => this.openPeer(false), 2000 + Math.random() * 1500);
+  }
+
+  private openPeer(guest: boolean) {
+    if (this.disposed || !this.PeerClass) return;
+    this.stopTransport();
+    const epoch = this.epoch;
+    const current = () => !this.disposed && epoch === this.epoch;
+    const id = guest ? 'lb-' + crypto.randomUUID().replace(/-/g, '') : this.roomId;
+    this.identity = id;
+    // PeerJS arbitrates one rendezvous owner. Whichever browser arrives first owns it;
+    // another browser connects with a random identity. No persistent server room is needed.
+    const peer = new this.PeerClass(id, { debug: 0, logFunction: () => undefined, secure: true });
+    this.peer = peer;
+    const opening = this.later(() => this.retry('The connection service is unavailable. Retrying this room…'), 20000);
+    peer.on('open', () => {
+      if (!current()) return;
+      clearTimeout(opening); this.timers.delete(opening);
+      if (guest) this.attach(peer.connect(this.roomId, { serialization: 'raw', reliable: false }), true);
+      else this.events.state('waiting');
+    });
+    peer.on('connection', c => {
+      if (!current() || guest || this.candidates.size >= 4) { c.close(); return; }
+      this.attach(c, false);
+    });
+    peer.on('error', err => {
+      if (!current()) return;
+      if (err.type === 'unavailable-id' && !guest) this.openPeer(true);
+      else this.retry('Connection interrupted. Retrying this room…');
+    });
+    peer.on('disconnected', () => {
+      if (current()) this.retry();
+    });
   }
 
   private attach(c: DataConnection, guest: boolean) {
     this.candidates.add(c);
+    const epoch = this.epoch;
+    const current = () => !this.disposed && epoch === this.epoch && this.candidates.has(c);
     let queue = Promise.resolve(); let pending = 0;
     const timeout = this.later(() => {
       if (this.joined && this.active === c) return;
-      if (guest) this.fail('Unable to reach the other person. Keep both pages open, try another network, and request a fresh invitation.');
+      if (guest) this.retry('Waiting for the other browser. Retrying this room…');
       else { if (this.active === c) this.active = undefined; c.close(); this.candidates.delete(c); }
     }, 25000);
-    c.on('open', () => { if (guest) void this.send(c, { type: 'hello' }); });
+    c.on('open', () => { if (current() && guest) void this.send(c, { type: 'hello' }); });
     c.on('data', raw => {
-      if (this.disposed || typeof raw !== 'string' || raw.length > 5000 || pending >= 16) return;
+      if (!current() || typeof raw !== 'string' || raw.length > 5000 || pending >= 16) return;
       pending++;
       queue = queue.then(async () => {
         try {
           const msg = await this.unpack(c, raw);
-          if (!msg || this.disposed) return;
+          if (!msg || !current()) return;
+          if (guest && msg.type === 'full') { this.retry('This room already has two people. Waiting for a space…'); return; }
+          if (!guest && msg.type === 'hello' && this.active && this.active !== c) {
+            await this.send(c, { type: 'full' });
+            this.later(() => { this.candidates.delete(c); c.close(); }, 250);
+            return;
+          }
           if (!this.joined) {
             if (!guest && msg.type === 'hello') {
               if (this.active && this.active !== c) { c.close(); return; }
@@ -120,7 +158,7 @@ export class LightRoom {
             } else if (guest && msg.type === 'welcome') {
               this.active = c; this.offsets.set(c, Date.now() - msg.at!);
               await this.send(c, { type: 'ready' });
-              this.connected(c);
+              if (current()) this.connected(c);
             } else if (!guest && this.active === c && msg.type === 'ready') this.connected(c);
             if (this.joined) { clearTimeout(timeout); this.timers.delete(timeout); }
             return;
@@ -136,31 +174,28 @@ export class LightRoom {
           else if (msg.type === 'presence') this.events.away(!!msg.away);
           else if (msg.type === 'ping') await this.send(c, { type: 'pong', away: this.hidden });
           else if (msg.type === 'pong') this.events.away(!!msg.away);
-          else if (msg.type === 'end') this.end(false, 'The other person ended the connection. The board is cleared.');
+          else if (msg.type === 'end') this.retry('The other person left. Waiting here for them to return.');
         } catch { /* Invalid ciphertext is discarded without logging or retaining it. */ }
       }).finally(() => { pending--; });
     });
     c.on('close', () => {
+      if (!current()) return;
       this.candidates.delete(c);
-      if (this.active === c && !this.disposed) this.end(false, 'The other person disconnected. Create a new invitation to reconnect.');
-      else if (guest && !this.disposed) this.fail('This invitation is no longer available. Ask for a fresh link.');
+      if (this.active === c || guest) this.retry('The other person disconnected. Waiting for them to return.');
     });
     c.on('error', () => {
-      if (this.active === c && !this.disposed) this.end(false, 'The connection was lost. Create a new invitation to reconnect.');
+      if (current() && (this.active === c || guest)) this.retry();
     });
   }
   private connected(c: DataConnection) {
     this.joined = true; this.active = c; this.lastSeen = Date.now();
-    for (const other of this.candidates) if (other !== c) other.close();
-    this.candidates.clear();
-    this.events.invite(''); this.events.clear(); this.events.state('connected');
-    // The signaling ID goes offline once paired, so a third browser cannot join.
-    this.peer?.disconnect();
+    this.events.clear(); this.events.state('connected');
+    // Keep rendezvous online; authenticated third browsers receive a full-room response.
+    // When either participant leaves, the remaining browser can claim the same room again.
     this.heartbeat = setInterval(() => {
-      if (Date.now() - this.lastSeen > 16000) { this.end(false, 'The other person went offline. Create a new invitation to reconnect.'); return; }
+      if (Date.now() - this.lastSeen > 16000) { this.retry('The other person went offline. Waiting for them to return.'); return; }
       void this.send(c, { type: 'ping' });
     }, 3000);
-    this.later(() => this.end(true, 'The one-hour session has ended. Create a new invitation to keep talking.'), 3600000);
   }
   private async send(c: DataConnection, msg: Message) {
     if (this.disposed || !this.key || !this.peer || !c.open || this.pendingSend > 8 || c.dataChannel?.bufferedAmount > 32768) return;
@@ -201,20 +236,16 @@ export class LightRoom {
     if (away) this.blackout();
     if (this.joined && this.active) void this.send(this.active, { type: 'presence', away });
   }
-  end(notify = true, detail = 'Connection ended. The board is cleared and the invitation is invalid.') {
+  end(notify = true, detail = 'You left the room. Rejoin here or reopen the same link anytime.') {
     if (this.disposed) return;
     if (notify && this.active) {
       void this.send(this.active, { type: 'end' }).finally(() => this.destroy());
     } else this.destroy();
-    this.events.clear(); this.events.invite(''); this.events.state('ended', detail);
+    this.events.clear(); this.events.state('ended', detail);
   }
   destroy() {
-    this.disposed = true; this.joined = false;
-    for (const timer of this.timers) clearTimeout(timer);
-    this.timers.clear(); clearInterval(this.heartbeat);
-    this.active?.close(); this.active = undefined;
-    for (const c of this.candidates) c.close(); this.candidates.clear();
-    this.peer?.destroy(); this.peer = undefined; this.key = undefined;
-    this.events.clear(); this.events.invite('');
+    this.disposed = true;
+    this.stopTransport();
+    this.key = undefined;
   }
 }

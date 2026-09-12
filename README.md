@@ -1,6 +1,6 @@
 # Afterglow
 
-A standard **React + Vite** app: a two-person, ephemeral Lite-Brite communication board. Share a single-use invitation, draw with a mouse or touch screen, and watch every light disappear after 1–3 seconds.
+A standard **React + Vite** app: a two-person, ephemeral Lite-Brite communication board. Share a reusable room link, draw with a mouse or touch screen, and watch every light disappear after 1–3 seconds.
 
 ## Run
 
@@ -41,13 +41,13 @@ Official reference: [Hostinger deployment guide](https://www.hostinger.com/suppo
 
 ## Behavior
 
-- One host and one invited guest. A host can practice drawing before pairing; practice is cleared and never replayed to the guest.
-- Invitations carry a random peer ID and 256-bit secret in the URL fragment. Fragments are not sent in HTTP requests and are removed from the guest's address bar on entry.
-- The first guest proving possession of the secret is admitted. After pairing, both peers disconnect from the signaling service and the invitation cannot admit a third person.
+- Two people per room. Either browser can arrive first and practice drawing before pairing; practice is cleared and never replayed to the guest.
+- Room links carry a random rendezvous ID and 256-bit secret in the URL fragment. Fragments are not sent in HTTP requests. The link stays in both address bars for refreshes and bookmarks, and can be retained by browser history. No application storage is used.
+- The first browser claims the rendezvous ID; the second connects with a random peer ID and proves possession of the secret. Signaling remains online. Additional browsers receive an authenticated room-full response and wait until a space opens. Anyone with the link can enter an available space; it is not tied to two named identities.
 - AES-GCM authenticates/encrypts all application messages with direction-specific peer IDs as additional authenticated data. WebRTC transport also encrypts data. Sequence numbers reject old/replayed messages within the connection.
 - The board holds at most 2,016 pegs in RAM. Every peg expires within 1–3 seconds. Receiver-side expiry accounts for transit age using a handshake clock offset. Already expired packets are discarded.
 - Blackout / Escape clears both boards. Visibility changes clear both boards and mark the participant away. Incoming strokes are discarded while the page is hidden. No history is sent on return.
-- Invitation expiry: 10 minutes. Session expiry: one hour. Lost connections end the room; reconnect with a new invitation. A heartbeat detects silent connection loss.
+- Room links do not expire. Both browsers can leave and return using the same link, in either order. A heartbeat detects silent connection loss, clears the board, and retries rendezvous. Offline/online transitions, reloads, and restored pages rejoin the same room. Leaving explicitly stops that browser until Rejoin or reload. No strokes are replayed. Create a different room to move to a new secret link; this does not revoke the old link.
 - A viewport-sized workspace with visible 44px touch controls on portrait/landscape phones, tablets, and desktops; safe-area insets and dynamic viewport height accommodate mobile browser chrome.
 - Shared 56×36 logical coordinates are mapped with uniform scaling and letterboxing, so drawing proportions are preserved across different aspect ratios. Device pixel ratio only controls raster sharpness and never affects transmitted coordinates. Existing clients remain wire-compatible.
 - Local 1–4× zoom, two-finger pinch/pan, a Move tool, and Fit reset. Zooming and resizing preserve unexpired pegs without replaying or persisting strokes. Empty margins do not draw stray edge lines.
@@ -71,7 +71,7 @@ node tests/responsive-board.mjs
 node tests/live-smoke.mjs
 ```
 
-The live smoke test uses separate Chromium contexts, including a touch-enabled phone viewport, and real PeerJS signaling/WebRTC. It verifies pairing, transmission, complete fading, touch, blackout, Escape, third-person rejection, disconnect cleanup, empty browser storage, and responsive overflow. Set `TEST_BASE_URL` to an authorized local preview and optionally `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for a custom Chromium binary. Install Playwright Chromium with `npx playwright install chromium` if needed. Test screenshots are ignored in `outputs/`.
+The live smoke test uses separate Chromium contexts, including a touch-enabled phone viewport, and real PeerJS signaling/WebRTC. It verifies pairing, transmission, complete fading, touch, blackout, Escape, third-person rejection, disconnect cleanup, reusable links, reconnection, empty browser storage, and responsive overflow. Set `TEST_BASE_URL` to an authorized local preview and optionally `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for a custom Chromium binary. Install Playwright Chromium with `npx playwright install chromium` if needed. Test screenshots are ignored in `outputs/`.
 
 The privacy-safe optional WebMCP tool `blackout_board` clears the same board as the UI and never exposes strokes or invitation secrets.
 

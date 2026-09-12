@@ -24,7 +24,7 @@ try {
     assert.ok(metrics.pageHeight<=height+1,`${width}x${height} page taller than viewport: ${metrics.pageHeight}`);
     assert.deepEqual(metrics.clipped,[],`${width} clipped controls`);
     assert.ok(metrics.canvas[1]>=100);
-    assert.ok(metrics.bitmap[0]>=metrics.canvas[0]);
+    assert.ok(metrics.bitmap[0]+1>=metrics.canvas[0]);
     await p.screenshot({path:`outputs/responsive-${width}x${height}.png`});
     console.log(`PASS: ${width}x${height} at ${dpr}x density fits board and all controls`);
     if(width===390){

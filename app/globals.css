@@ -36,7 +36,7 @@ h1 { font:400 clamp(18px,2vw,26px) Georgia,serif; color:#edd5ac; margin:0 0 7px;
 .session-status { display:flex; align-items:center; gap:7px; font-size:12px; color:#b5c0b9; line-height:1.4; }
 .status-dot { width:6px; height:6px; background:#d6b77e; border-radius:50%; flex-shrink:0; }
 .connected .status-dot { background:#8fdda7; box-shadow:0 0 8px #8fdda733; }
-.session-action { flex-shrink:0; max-width:48%; }
+.session-action { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; flex-shrink:0; max-width:48%; }
 .primary, .secondary { min-height:44px; padding:11px 16px; display:flex; align-items:center; justify-content:center; gap:10px; border-radius:6px; font-size:14px; line-height:1.35; }
 .primary { background:#f3c578; color:#20201b; border:1px solid #f3c578; font-weight:600; }
 .secondary { background:#253029; color:#e1e7da; border:1px solid #465248; }

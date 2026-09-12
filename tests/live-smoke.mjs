@@ -23,8 +23,8 @@ try{
   await guest.goto(invite);
   await host.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:40000});
   await guest.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:10000});
-  assert.equal(new URL(guest.url()).hash,'');
-  console.log('PASS: two isolated browsers authenticate using a single-use fragment invitation');
+  assert.equal(guest.url(),invite);assert.equal(host.url(),invite);
+  console.log('PASS: two isolated browsers authenticate using a reusable fragment room link');
   const a=await center(host,12,10),b=await center(host,38,25);
   await host.mouse.move(a.x,a.y);await host.mouse.down();await host.mouse.move(b.x,b.y,{steps:12});await host.mouse.up();
   await guest.waitForTimeout(100);
@@ -59,9 +59,9 @@ try{
   assert.equal(await pixels(host),0);assert.equal(await pixels(guest),0);
   console.log('PASS: Escape immediately clears both boards');
   const third=await browser.newPage();await third.goto(invite);
-  await third.getByText(/This invitation is used, expired/).waitFor({timeout:35000});
+  await third.getByText(/This room already has two people/).waitFor({timeout:35000});
   assert.ok(await host.getByText('CONNECTED · JUST YOU TWO',{exact:true}).isVisible());
-  await third.close();console.log('PASS: used invitation rejects a third browser');
+  await third.close();console.log('PASS: full room keeps a third browser out');
   for(const page of [host,guest]){
     const storage=await page.evaluate(()=>({local:localStorage.length,session:sessionStorage.length,cookies:document.cookie}));
     assert.equal(storage.local,0);assert.equal(storage.session,0);
@@ -69,10 +69,36 @@ try{
     assert.equal(overflow,false);
   }
   console.log('PASS: no browser storage and no desktop/phone horizontal overflow');
-  await guest.getByRole('button',{name:'End connection',exact:true}).click();
-  await host.getByText(/other person (ended|disconnected)/).waitFor({timeout:6000});
+  await guest.getByRole('button',{name:'Leave room',exact:true}).click();
+  await host.getByText(/other person (left|disconnected)/).waitFor({timeout:6000});
   assert.equal(await pixels(host),0);assert.equal(await pixels(guest),0);
-  console.log('PASS: ending the session disconnects both sides and clears the board');
+  console.log('PASS: leaving clears both boards while keeping the room link');
+  await guest.getByRole('button',{name:'Rejoin room',exact:true}).click();
+  await host.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:45000});
+  await guest.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:15000});
+  assert.equal(host.url(),invite);assert.equal(guest.url(),invite);
+  console.log('PASS: explicit rejoin uses the same link');
+  await host.reload();
+  await host.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:45000});
+  await guest.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:15000});
+  await draw(host);await guest.waitForTimeout(150);assert.ok(await pixels(guest)>0);
+  console.log('PASS: owner reload reconnects and transmits new strokes');
+  await host.goto('about:blank');await guest.goto('about:blank');
+  await guest.waitForTimeout(1500);
+  // The original guest returns first, after both pages and all room state are gone.
+  await guest.goto(invite);
+  await guest.getByText('WAITING FOR YOUR PERSON',{exact:true}).waitFor({timeout:45000});
+  await host.goto(invite);
+  await guest.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:45000});
+  await host.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:15000});
+  assert.equal(await pixels(host),0);assert.equal(await pixels(guest),0);
+  await draw(host);await guest.waitForTimeout(200);assert.ok(await pixels(guest)>0);
+  console.log('PASS: both return with the same link in reverse order; no old drawings replay');
+  await guestContext.setOffline(true);await guest.waitForTimeout(500);
+  await guestContext.setOffline(false);
+  await guest.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:45000});
+  await host.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:15000});
+  console.log('PASS: network recovery automatically rejoins the same room');
   assert.deepEqual(errors,[]);console.log('PASS: no browser runtime errors');
 }catch(e){await host.screenshot({path:'outputs/failure-host.png'});await guest.screenshot({path:'outputs/failure-guest.png'});console.error(e);console.log('ERRORS:',errors);console.log('HOST:',(await host.locator('body').innerText()).slice(-1800));console.log('GUEST:',(await guest.locator('body').innerText()).slice(-1800));process.exitCode=1;}
 finally{await browser.close();}

@@ -27,7 +27,7 @@ export default function Home() {
   const blackout = useCallback(() => { setClear(v => v + 1); room.current?.blackout(); }, []);
   const begin = useCallback((incoming?: { host: string; secret: string }) => {
     room.current?.destroy();
-    setAway(false); setDetail(''); setCopied(false); setCopyError(false);
+    setInvite(''); setAway(false); setDetail(''); setCopied(false); setCopyError(false);
     const next = new LightRoom({
       state: (s, message) => {
         setState(s); setDetail(message || '');
@@ -45,26 +45,26 @@ export default function Home() {
   }, []);
   useEffect(() => {
     const hash = location.hash;
-    // The invitation is consumed in-browser and removed from the visible URL/history entry.
-    if (hash) history.replaceState(null, '', location.pathname);
+    // Keep the room capability in the fragment so refreshes and bookmarks reuse it.
     if (hash) {
       const incoming = parseInvite(hash);
       if (incoming) begin(incoming);
-      else { setState('error'); setDetail('That invitation is incomplete. Ask the other person to share a fresh link.'); }
+      else { setState('error'); setDetail('That room link is incomplete. Open the full shared link or create a new room.'); }
     }
     setShareable(typeof navigator.share === 'function');
     setReady(true);
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape') blackout(); };
     const visibility = () => { if (document.hidden) blackout(); room.current?.presence(document.hidden); };
     const hide = () => { blackout(); room.current?.end(true); };
-    const restore = (e: PageTransitionEvent) => { if (e.persisted) { room.current?.destroy(); setState('ended'); setDetail('This page was restored. Create a new invitation to reconnect.'); } };
-    const offline = () => room.current?.end(false, 'You are offline. Reconnect to the internet and create a new invitation.');
+    const reconnect = () => { const incoming = parseInvite(location.hash); if (incoming) begin(incoming); };
+    const restore = (e: PageTransitionEvent) => { if (e.persisted) reconnect(); };
+    const offline = () => room.current?.end(false, 'You are offline. This room will reconnect when your internet returns.');
     document.addEventListener('keydown', key); document.addEventListener('visibilitychange', visibility);
-    window.addEventListener('pagehide', hide); window.addEventListener('pageshow', restore); window.addEventListener('offline', offline);
+    window.addEventListener('pagehide', hide); window.addEventListener('pageshow', restore); window.addEventListener('offline', offline); window.addEventListener('online', reconnect); window.addEventListener('hashchange', reconnect);
     return () => {
       room.current?.destroy();
       document.removeEventListener('keydown', key); document.removeEventListener('visibilitychange', visibility);
-      window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', restore); window.removeEventListener('offline', offline);
+      window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', restore); window.removeEventListener('offline', offline); window.removeEventListener('online', reconnect); window.removeEventListener('hashchange', reconnect);
       if (copiedTimer.current) clearTimeout(copiedTimer.current);
     };
   }, [begin, blackout]);
@@ -93,12 +93,12 @@ export default function Home() {
     catch { setCopyError(true); }
   };
   const share = async () => {
-    try { await navigator.share({ title: 'Join me on Afterglow', text: 'A little light between us. Keep this invitation just between us.', url: invite }); }
+    try { await navigator.share({ title: 'Join me on Afterglow', text: 'Our shared light board. Save this private room link to meet here again.', url: invite }); }
     catch (error) { if (!(error instanceof Error && error.name === 'AbortError')) setCopyError(true); }
   };
   const busy = state === 'creating' || state === 'joining';
   const connected = state === 'connected';
-  const status = connected ? 'CONNECTED · JUST YOU TWO' : state === 'waiting' ? 'WAITING FOR YOUR PERSON' : state === 'joining' ? 'MAKING A CONNECTION' : state === 'creating' ? 'CREATING YOUR INVITATION' : 'YOUR SIDE IS READY';
+  const status = connected ? 'CONNECTED · JUST YOU TWO' : state === 'waiting' ? 'WAITING FOR YOUR PERSON' : state === 'joining' ? 'MAKING A CONNECTION' : state === 'creating' ? 'CREATING YOUR ROOM' : 'YOUR SIDE IS READY';
   return <main className="app-shell">
     <header className="masthead">
       <a className="brand" href="/" aria-label="Afterglow home"><span className="brand-dots"><i/><i/><i/><i/></span>afterglow<span className="brand-period">.</span></a>
@@ -107,7 +107,7 @@ export default function Home() {
     </header>
     <section className={`session-bar ${connected ? 'connected' : ''}`} aria-label="Connection">
       <div className="session-copy"><h1>{connected ? 'Your shared light board' : 'A little light between us.'}</h1><span className="session-status" role="status"><span className="status-dot"/>{status}</span></div>
-      <div className="session-action">{connected ? <button className="secondary" onClick={() => room.current?.end()}><X size={17}/><span>End connection</span></button> : <button className="primary" disabled={busy || !ready} onClick={() => invite ? setModal('invite') : begin()}>{busy ? 'Connecting…' : invite ? 'Share invitation' : state === 'ended' || state === 'error' ? 'New invitation' : 'Invite someone'}<ArrowUpRight size={18}/></button>}</div>
+      <div className="session-action">{connected ? <><button className="secondary" onClick={() => setModal('invite')} aria-label="Share room link"><Link2 size={17}/><span>Room link</span></button><button className="secondary" onClick={() => room.current?.end()}><X size={17}/><span>Leave room</span></button></> : <button className="primary" disabled={busy || !ready} onClick={() => state === 'ended' || state === 'error' ? begin(parseInvite(location.hash) || undefined) : invite ? setModal('invite') : begin()}>{busy ? 'Connecting…' : state === 'ended' || state === 'error' ? 'Rejoin room' : invite ? 'Share room link' : 'Invite someone'}<ArrowUpRight size={18}/></button>}</div>
     </section>
     <section className={`board-section ${connected ? 'connected' : ''}`} aria-label="Light board">
       <div className="board-top"><span className="small-label">{connected ? away ? 'THEY STEPPED AWAY' : 'DRAW TOGETHER' : 'TRY DRAWING WHILE YOU WAIT'}</span><span className="fine board-message">{connected ? away ? 'Their board is cleared. Nothing is replayed.' : 'Your lights fade on both screens.' : 'Invite one person to share this board.'}</span><span className="small-label"><Link2 size={15}/>{connected ? '2' : '1'} of 2</span></div>
@@ -119,7 +119,7 @@ export default function Home() {
       {detail && <div className="notice-bar" role="status">{detail}</div>}
     </section>
     <footer><span>Two people. Fading lights. No message history.</span><span className="keyboard-tip">Keyboard: arrows + Space to draw · Esc to clear</span></footer>
-    <Dialog open={modal === 'invite'} onOpenChange={open => { if (!open) setModal(null); }}><DialogContent className="modal"><DialogTitle>A light on the other side.</DialogTitle><DialogDescription>Send this private invitation to one person. Keep this page open while they join. Once you connect, the link stops working.</DialogDescription>{invite ? <><label className="sr-only" htmlFor="invite-link">Private invitation link</label><input id="invite-link" value={invite} readOnly onFocus={e => e.currentTarget.select()} autoComplete="off" spellCheck={false}/><div className="modal-actions"><button className="primary" onClick={copy}>{copied ? 'Copied' : 'Copy invitation'}{copied ? <Check size={18}/> : <Copy size={18}/>}</button>{shareable && <button className="secondary share-button" onClick={share}><Share2 size={17}/> Share</button>}</div><span role="status" className="fine">{copyError ? 'Select the link above and copy it manually.' : copied ? 'Invitation copied. Share it only with your person.' : 'Expires in 10 minutes. Only new strokes are shared.'}</span><button className="quiet cancel-invite" onClick={() => { room.current?.end(); setModal(null); }}>Cancel invitation</button></> : <p role="status">Creating a secure invitation…</p>}</DialogContent></Dialog>
-    <Dialog open={modal === 'privacy'} onOpenChange={open => { if (!open) setModal(null); }}><DialogContent className="modal privacy-modal"><DialogTitle>Here, then gone.</DialogTitle><DialogDescription>Afterglow keeps your drawings in the moment.</DialogDescription><div className="privacy-copy"><p><strong>No message history.</strong> Lights live in browser memory for up to three seconds. There’s no database, account, analytics, drawing log, local storage, or replay.</p><p><strong>Encrypted between you.</strong> Your invitation contains a secret key after the # in the link. It never goes to the website server. The browsers authenticate each other with that key and encrypt every stroke. A connection service helps them meet; a relay may carry encrypted traffic when needed.</p><p><strong>Just two people.</strong> The first person with the full invitation can join. Share it privately. After pairing, the invitation closes. Either person can end the session; sessions expire after an hour.</p><p><strong>Fading is not screenshot protection.</strong> A glance may still catch a short word. Screenshots, video, a recipient, or a compromised device can capture visible lights. Use a one-second fade and Blackout for less exposure.</p><p><strong>Network metadata is different.</strong> The hosting, signaling, and relay providers may retain IP addresses and connection metadata. Afterglow cannot guarantee that those services log nothing. A direct connection may reveal your IP address to the other person.</p><p>Switching apps clears both boards. Strokes sent while you’re away are discarded. A broken connection ends the room; use a fresh invitation to reconnect.</p></div></DialogContent></Dialog>
+    <Dialog open={modal === 'invite'} onOpenChange={open => { if (!open) setModal(null); }}><DialogContent className="modal"><DialogTitle>A light on the other side.</DialogTitle><DialogDescription>Share this room link once. Whenever you both open it, you can draw together. Either person can arrive first. Save or bookmark it to come back.</DialogDescription>{invite ? <><label className="sr-only" htmlFor="invite-link">Private room link</label><input id="invite-link" value={invite} readOnly onFocus={e => e.currentTarget.select()} autoComplete="off" spellCheck={false}/><div className="modal-actions"><button className="primary" onClick={copy}>{copied ? 'Copied' : 'Copy room link'}{copied ? <Check size={18}/> : <Copy size={18}/>}</button>{shareable && <button className="secondary share-button" onClick={share}><Share2 size={17}/> Share</button>}</div><span role="status" className="fine">{copyError ? 'Select the link above and copy it manually.' : copied ? 'Room link copied. Keep it between you two.' : 'Reusable link. Two people at a time. No drawing history.'}</span><button className="quiet cancel-invite" onClick={() => { room.current?.end(); setModal(null); }}>Leave room</button><button className="quiet cancel-invite" onClick={() => begin()}>Create a different room</button></> : <p role="status">Creating your room link…</p>}</DialogContent></Dialog>
+    <Dialog open={modal === 'privacy'} onOpenChange={open => { if (!open) setModal(null); }}><DialogContent className="modal privacy-modal"><DialogTitle>Here, then gone.</DialogTitle><DialogDescription>Afterglow keeps your drawings in the moment.</DialogDescription><div className="privacy-copy"><p><strong>No message history.</strong> Lights live in browser memory for up to three seconds. There’s no database, account, analytics, drawing log, local storage, or replay.</p><p><strong>Encrypted between you.</strong> Your room link contains a secret key after the # in the link. It never goes to the website server. The browsers authenticate each other with that key and encrypt every stroke. A connection service helps them meet; a relay may carry encrypted traffic when needed.</p><p><strong>Just two people.</strong> Anyone with the full link can enter when a space is available. Only two people can connect at once. Keep the link private; it stays in your address bar and may be saved in browser history or bookmarks. Create a different room for a new link.</p><p><strong>Fading is not screenshot protection.</strong> A glance may still catch a short word. Screenshots, video, a recipient, or a compromised device can capture visible lights. Use a one-second fade and Blackout for less exposure.</p><p><strong>Network metadata is different.</strong> The hosting, signaling, and relay providers may retain IP addresses and connection metadata. Afterglow cannot guarantee that those services log nothing. A direct connection may reveal your IP address to the other person.</p><p>Switching apps clears both boards. Strokes sent while you’re away are discarded. If the connection breaks, the board clears and the browsers try to reconnect using the same link. Leaving stops your connection; the link remains reusable.</p></div></DialogContent></Dialog>
   </main>;
 }
