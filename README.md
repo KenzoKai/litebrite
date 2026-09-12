@@ -38,6 +38,8 @@ Use the PHP/HTML website's **Advanced → GIT** deployment, repository `KenzoKai
 
 `https://litebrite.it/relay.php` must execute PHP with shared memory available across workers. Its GET health response reports `{"transport":"https-memory","ready":true}`. A static host alone cannot run the relay. Static copies of the frontend at the permitted Hostinger/Sites origins use the same canonical relay endpoint and therefore share the same rooms. No TURN account, API key, database, or Node server is needed.
 
+Hostinger's CDN browser-verification page was observed to discard the room fragment on fresh browser visits. If it appears, finish the check and reopen the original full room link. Do not put the secret into a query string to work around this: query strings reach servers and logs. CDN challenge filtering remains at its original Medium setting. Browser relay tests complete the normal homepage check before opening saved links; they do not validate that separate CDN first-visit behavior.
+
 The relay only accepts browser origins explicitly listed in `public/relay.php`. When moving the canonical domain, update the endpoint in `app/connection.ts`, update that allowlist, deploy the relay, and retest. Do not enable direct connections as a fallback. Security headers are supplied in `.htaccess` and `_headers`; verify your host applies them. Browser URL fragments are never transmitted as part of HTTP URLs.
 
 ## Drawing controls

@@ -16,7 +16,12 @@ try {
   });
   const desktop=await desktopContext.newPage(), phone=await phoneContext.newPage();
   const errors=[]; for(const p of [desktop,phone]) p.on('pageerror',e=>errors.push(e.message));
-  await desktop.goto(process.env.TEST_BASE_URL || 'http://localhost:5173/');
+  const base = process.env.TEST_BASE_URL || 'http://localhost:5173/';
+  // Hostinger's first-visit browser check can discard fragments when it reloads.
+  // Complete that normal check on the homepage before testing a saved room link.
+  await phone.goto(base);
+  await phone.getByRole('button',{name:'Invite someone',exact:true}).waitFor();
+  await desktop.goto(base);
   await desktop.getByRole('button',{name:'Invite someone',exact:true}).click();
   await desktop.locator('#invite-link').waitFor();
   const invite=await desktop.locator('#invite-link').inputValue();
