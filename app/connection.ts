@@ -47,8 +47,8 @@ export class LightRoom {
   private iceExpires = 0;
   private tabChannel?: BroadcastChannel;
   private hidden = false;
-  private burst = 0;
-  private burstAt = 0;
+  private drawing?: { points: Set<number>; color: number; ttl: number; at: number };
+  private drawingTimer?: ReturnType<typeof setTimeout>;
   constructor(private events: Events) {}
 
   private later(fn: () => void, ms: number) {
@@ -97,6 +97,7 @@ export class LightRoom {
   }
 
   private stopTransport() {
+    this.discardDrawing();
     // Invalidate callbacks before closing transports; stale attempts must never end a new connection.
     this.epoch++;
     this.joined = false;
@@ -261,10 +262,29 @@ export class LightRoom {
   }
   draw(stroke: Stroke) {
     if (!this.joined || !this.active || this.hidden) return;
-    const now=performance.now();if(now-this.burstAt>1000){this.burst=0;this.burstAt=now;}if(++this.burst>100)return;
-    void this.send(this.active, { type: 'stroke', ...stroke });
+    if (this.drawing && (this.drawing.color !== stroke.color || this.drawing.ttl !== stroke.ttl)) this.flushDrawing();
+    if (!this.drawing) this.drawing = { points: new Set(), color: stroke.color, ttl: stroke.ttl, at: performance.now() };
+    // Touch hardware can deliver hundreds of samples per second. Merge fresh cells
+    // instead of dropping every sample after a per-second message quota.
+    for (const point of stroke.points) {
+      this.drawing.points.delete(point);
+      this.drawing.points.add(point);
+      if (this.drawing.points.size > 120) this.drawing.points.delete(this.drawing.points.values().next().value!);
+    }
+    if (!this.drawingTimer) this.drawingTimer = this.later(() => this.flushDrawing(), 20);
   }
-  blackout() { this.events.clear(); if (this.joined && this.active) void this.send(this.active, { type: 'clear' }); }
+  private discardDrawing() {
+    if (this.drawingTimer) { clearTimeout(this.drawingTimer); this.timers.delete(this.drawingTimer); }
+    this.drawingTimer = undefined;
+    this.drawing = undefined;
+  }
+  private flushDrawing() {
+    const drawing = this.drawing;
+    this.discardDrawing();
+    if (!drawing || !this.joined || !this.active || this.hidden || performance.now() - drawing.at > 100) return;
+    void this.send(this.active, { type: 'stroke', points: [...drawing.points], color: drawing.color, ttl: drawing.ttl });
+  }
+  blackout() { this.discardDrawing(); this.events.clear(); if (this.joined && this.active) void this.send(this.active, { type: 'clear' }); }
   presence(away: boolean) {
     this.hidden = away;
     if (away) this.blackout();
@@ -272,6 +292,7 @@ export class LightRoom {
   }
   end(notify = true, detail = 'You left the room. Rejoin here or reopen the same link anytime.') {
     if (this.disposed) return;
+    this.discardDrawing();
     if (notify && this.active) {
       void this.send(this.active, { type: 'end' }).finally(() => this.destroy());
     } else this.destroy();

@@ -86,6 +86,11 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
       invalidate.current();
     };
     const observer = new ResizeObserver(resize); observer.observe(el); resize();
+    // Safari's native selection/callout gestures are separate from touch-action.
+    // Non-passive listeners keep a held finger owned by this drawing surface.
+    const preventTouchDefault = (event: TouchEvent) => { if (event.cancelable) event.preventDefault(); };
+    el.addEventListener('touchstart', preventTouchDefault, { passive: false });
+    el.addEventListener('touchmove', preventTouchDefault, { passive: false });
     // ResizeObserver does not always fire when moving a window between screens of equal CSS size.
     let density = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
     const changedDensity = () => { density.removeEventListener('change', changedDensity); density = matchMedia(`(resolution: ${devicePixelRatio}dppx)`); density.addEventListener('change', changedDensity); resize(); };
@@ -93,7 +98,7 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
     window.addEventListener('resize', resize);
     const visibility = () => { if (document.hidden) { pegs.current.clear(); pointers.current.clear(); last.current = null; } invalidate.current(); };
     document.addEventListener('visibilitychange', visibility);
-    return () => { observer.disconnect(); cancelAnimationFrame(raf); invalidate.current = () => undefined; density.removeEventListener('change', changedDensity); window.removeEventListener('resize', resize); document.removeEventListener('visibilitychange', visibility); };
+    return () => { el.removeEventListener('touchstart', preventTouchDefault); el.removeEventListener('touchmove', preventTouchDefault); observer.disconnect(); cancelAnimationFrame(raf); invalidate.current = () => undefined; density.removeEventListener('change', changedDensity); window.removeEventListener('resize', resize); document.removeEventListener('visibilitychange', visibility); };
   }, []);
 
   function put(points: number[]) {
@@ -118,6 +123,7 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
     <div className="canvas-shell">
       <canvas ref={canvas} tabIndex={0} aria-label="Shared light board. Touch or drag to draw. Use arrow keys to move and Space to light a peg. Pinch with two fingers to zoom."
         className={pan ? 'pan-mode' : ''}
+        onContextMenu={e => e.preventDefault()}
         onFocus={() => { focused.current = true; invalidate.current(); }}
         onBlur={() => { focused.current = false; resetGesture(); invalidate.current(); }}
         onPointerDown={e => {
