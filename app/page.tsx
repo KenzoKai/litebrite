@@ -18,7 +18,6 @@ export default function Home() {
   const [ready, setReady] = useState(false);
   const [color, setColor] = useState(0);
   const [fade, setFade] = useState(2000);
-  const [clear, setClear] = useState(0);
   const [state, setState] = useState<RoomState>('idle');
   const stateRef = useRef<RoomState>('idle');
   const [detail, setDetail] = useState('');
@@ -30,11 +29,12 @@ export default function Home() {
   const [copyError, setCopyError] = useState(false);
   const room = useRef<LightRoom | null>(null);
   const resumeAfterOffline = useRef(false);
-  const listener = useRef<((s: Stroke) => void) | null>(null);
+  const listener = useRef<((s: Stroke | null) => void) | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const subscribe = useCallback((fn: (s: Stroke) => void) => { listener.current = fn; return () => { listener.current = null; }; }, []);
+  const subscribe = useCallback((fn: (s: Stroke | null) => void) => { listener.current = fn; return () => { listener.current = null; }; }, []);
   const onDraw = useCallback((s: Stroke) => room.current?.draw(s), []);
-  const blackout = useCallback(() => { setClear(v => v + 1); games.reset(); room.current?.blackout(); }, [games]);
+  const clearDrawings = useCallback(() => { listener.current?.(null); room.current?.clearDrawings(); }, []);
+  const blackout = useCallback(() => { listener.current?.(null); games.reset(); room.current?.blackout(); }, [games]);
   const begin = useCallback((incoming?: { host: string; secret: string }) => {
     room.current?.destroy();
     setInvite(''); setAway(false); setDetail(''); setCopied(false); setCopyError(false);
@@ -47,7 +47,7 @@ export default function Home() {
       },
       invite: setInvite,
       stroke: s => listener.current?.(s),
-      clear: () => setClear(v => v + 1),
+      clear: () => listener.current?.(null),
       away: setAway,
       game: data => games.receive(data),
       gameReady: leader => { games.connect(leader, data => next.sendGame(data)); setGamesReady(true); },
@@ -126,13 +126,12 @@ export default function Home() {
     </section>
     <nav className="mode-picker" aria-label="Board mode">{([['draw','Free drawing','✦'],['chess','Chess','♔'],['noughts','Tic-tac-toe','×'],['blocks','Falling lights','▧']] as [Mode,string,string][]).map(([mode,label,icon])=><button key={mode} aria-pressed={gameView.game.mode===mode} disabled={gameView.pending||(connected&&!gamesReady)} onClick={()=>gameAction({type:'mode',mode})}><span aria-hidden="true">{icon}</span>{label}</button>)}<span className="fine">{connected?gamesReady?'Shared play':'Reload both browsers to enable games':'Try a game, or invite someone'}</span></nav>
     <section className={`board-section ${gameView.game.mode !== 'draw' ? 'playing' : ''} ${connected ? 'connected' : ''}`} aria-label="Light board">
-      <div className="board-top"><span className="small-label">{gameView.game.mode !== 'draw' ? 'PLAY IN LIGHT' : connected ? away ? 'THEY STEPPED AWAY' : 'DRAW TOGETHER' : 'TRY DRAWING WHILE YOU WAIT'}</span><span className="fine board-message">{gameView.game.mode !== 'draw' ? 'The round lives only in your browsers.' : connected ? away ? 'Their board is cleared. Nothing is replayed.' : 'Your lights fade on both screens.' : 'Invite one person to share this board.'}</span><span className="small-label"><Link2 size={15}/>{connected || state === 'full' ? '2' : '1'} of 2</span></div>
-      {gameView.game.mode === 'draw' ? <><Board color={color} fade={fade} clearVersion={clear} subscribe={subscribe} onDraw={onDraw}/>
+      <div className="board-top"><span className="small-label">{gameView.game.mode !== 'draw' ? 'PLAY IN LIGHT' : connected ? away ? 'THEY STEPPED AWAY' : 'DRAW TOGETHER' : 'TRY DRAWING WHILE YOU WAIT'}</span><span className="fine board-message">{gameView.game.mode !== 'draw' ? 'Draw in the margins while you play.' : connected ? away ? 'Their board is cleared. Nothing is replayed.' : 'Your lights fade on both screens.' : 'Invite one person to share this board.'}</span><span className="small-label"><Link2 size={15}/>{connected || state === 'full' ? '2' : '1'} of 2</span></div>
+      {gameView.game.mode === 'draw' ? <Board color={color} fade={fade} clearVersion={0} subscribe={subscribe} onDraw={onDraw}/> : <GameBoard view={gameView} act={gameAction} blackout={blackout} drawing={{color,fade,clearVersion:0,subscribe,onDraw}}/>}
       <div className="controls"><RadioGroup aria-label="Your light color" value={String(color)} onValueChange={v => setColor(Number(v))} className="palette">{COLORS.map((c, i) => <RadioGroupItem key={c} value={String(i)} aria-label={['Amber','Rose','Violet','Sky','Mint','White'][i]} className={`swatch ${color === i ? 'selected' : ''}`} style={{ '--peg': c } as React.CSSProperties}/>)}<span className="fine color-label">YOUR LIGHT</span></RadioGroup>
-        <div className="fade-control"><span className="fine" id="fade-label">Fade after</span><RadioGroup aria-labelledby="fade-label" value={String(fade)} onValueChange={v => { setFade(Number(v)); blackout(); }} className="fade-choices">{[1000,2000,3000].map(ms => <label key={ms} className={`fade-option ${fade === ms ? 'active' : ''}`}><RadioGroupItem value={String(ms)} aria-label={`Fade after ${ms/1000} second${ms === 1000 ? '' : 's'}`}/><span>{ms/1000}s</span></label>)}</RadioGroup></div>
-        <button className="blackout" onClick={blackout}><Moon size={16}/> Blackout <kbd>Esc</kbd></button>
+        <div className="fade-control"><span className="fine" id="fade-label">Fade after</span><RadioGroup aria-labelledby="fade-label" value={String(fade)} onValueChange={v => { setFade(Number(v)); if (gameView.game.mode === 'draw') blackout(); }} className="fade-choices">{[1000,2000,3000].map(ms => <label key={ms} className={`fade-option ${fade === ms ? 'active' : ''}`}><RadioGroupItem value={String(ms)} aria-label={`Fade after ${ms/1000} second${ms === 1000 ? '' : 's'}`}/><span>{ms/1000}s</span></label>)}</RadioGroup></div>
+        <button className="blackout" onClick={gameView.game.mode === 'draw' ? blackout : clearDrawings}><Moon size={16}/>{gameView.game.mode === 'draw' ? <>Blackout <kbd>Esc</kbd></> : 'Clear drawings'}</button>
       </div>
-      </> : <GameBoard view={gameView} act={gameAction} blackout={blackout}/> }
       {detail && <div className="notice-bar" role="status">{detail}</div>}
     </section>
     <footer><span>Two people. Fading lights. No message history.</span><span className="keyboard-tip">Keyboard: arrows + Space to draw · Esc to clear</span></footer>

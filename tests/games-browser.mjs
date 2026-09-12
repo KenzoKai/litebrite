@@ -50,12 +50,12 @@ try{
  await desktop.getByRole('button',{name:'Drop block',exact:true}).click();
  console.log('PASS: cooperative falling blocks accept both players, update scores, pause, and resume');
  await phone.getByRole('button',{name:'Clear game',exact:true}).click();
- for(const p of pages)await p.locator('canvas').waitFor();
+ for(const p of pages)await expect(mode(p,'Free drawing')).toHaveAttribute('aria-pressed','true');
  await phone.waitForTimeout(1500);
  for(const p of pages){await expect(mode(p,'Free drawing')).toHaveAttribute('aria-pressed','true');assert.equal(await p.evaluate(()=>localStorage.length+sessionStorage.length),0);}
  await mode(desktop,'Chess').click();await phone.getByRole('group',{name:'Chess board',exact:true}).waitFor();
  await desktop.getByRole('button',{name:'Leave room',exact:true}).click();
- for(const p of pages)await p.locator('canvas').waitFor();
+ for(const p of pages)await expect(mode(p,'Free drawing')).toHaveAttribute('aria-pressed','true');
  console.log('PASS: clearing and leaving remove games on both screens, with no browser storage');
  // Practice mode remains useful without a partner, including narrow and landscape screens.
  for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1440,900]]){
@@ -67,4 +67,4 @@ try{
  }
  console.log('PASS: all modes fit phone, tablet, desktop, and landscape widths');
  assert.deepEqual(errors,[]);
-}finally{await browser.close();}
+}catch(error){ console.log('GAME TEST STATUS',await Promise.all(pages.map(p=>p.locator('.game-status,.session-status,.mode-picker').allTextContents())),errors);throw error;}finally{await browser.close();}

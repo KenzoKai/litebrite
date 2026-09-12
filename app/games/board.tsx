@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef, createContext, useContext, type ReactNode } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ChevronsDown, RotateCw, Pause, Play, RotateCcw, Moon } from 'lucide-react';
 import { chessPosition, ghostY, legalTargets, shapeCells, type Action, type GameState, type Blocks } from './engine';
+import Board, { type Stroke } from '../board';
 import type { GameView } from './session';
+
+type DrawingProps = { color:number; fade:number; clearVersion:number; onDraw:(s:Stroke)=>void; subscribe:(fn:(s:Stroke|null)=>void)=>(()=>void); surface:string };
+const DrawingContext = createContext<DrawingProps | null>(null);
+function GameStage({children}:{children:ReactNode}) {
+  const cutout=useRef<HTMLDivElement>(null);
+  const drawing=useContext(DrawingContext)!;
+  return <div className="game-stage"><Board {...drawing} cutout={cutout}/><div className="game-stage-center" ref={cutout}>{children}</div></div>;
+}
 
 const names: Record<string,string>={p:'pawn',r:'rook',n:'knight',b:'bishop',q:'queen',k:'king'};
 const glyphs: Record<string,string[]>={
@@ -38,7 +47,7 @@ function ChessBoard({game,side,shared,pending,act}:{game:GameState;side:number;s
   return <>
     <div className="game-instructions">{shared?`You are ${side===0?'Amber / White':'Sky / Black'}. `:'Practice: play both sides. '}{over?'Start a new round to play again.':'Tap a piece, then a glowing destination.'}</div>
     {promotion&&<div className="promotion" role="group" aria-label="Choose promotion"><span>Promote pawn to</span>{['q','r','b','n'].map(p=><button className="secondary" key={p} onClick={()=>{act({type:'chess',from:selected,to:promotion,promotion:p});setPromotion('');setSelected('');}}>{names[p]}</button>)}</div>}
-    <div className="chess-grid" role="group" aria-label="Chess board">
+    <GameStage><div className="chess-grid" role="group" aria-label="Chess board">
       {[...ranks].flatMap((rank,y)=>[...files].map((file,x)=>{
         const square=file+rank,piece=squares.find(p=>p?.square===square);
         const target=targets.includes(square as typeof targets[number]);
@@ -47,13 +56,14 @@ function ChessBoard({game,side,shared,pending,act}:{game:GameState;side:number;s
         </button>;
       }))}
     </div>
-    <div className="piece-key" aria-label="Chess piece key">{['k','q','r','b','n','p'].map(p=><span key={p}><PegIcon type={p}/>{names[p]}</span>)}</div>
+    </GameStage><div className="piece-key" aria-label="Chess piece key">{['k','q','r','b','n','p'].map(p=><span key={p}><PegIcon type={p}/>{names[p]}</span>)}</div>
   </>;
 }
 function BlocksBoard({b,act}:{b:Blocks;act:(a:Action)=>void}) {
   const send=(move:Extract<Action,{type:'block'}>['move'])=>act({type:'block',move,piece:b.piece});
   useEffect(()=>{
     const key=(e:KeyboardEvent)=>{
+      if(e.defaultPrevented || e.target instanceof HTMLCanvasElement)return;
       if(e.target instanceof HTMLElement && (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName) || (e.key===' ' && e.target.closest('button,a'))))return;
       const move:Record<string,Extract<Action,{type:'block'}>['move']>={ArrowLeft:'left',ArrowRight:'right',ArrowDown:'down',ArrowUp:'rotate',' ':'drop',p:'pause',P:'pause'};
       if(move[e.key]){e.preventDefault();act({type:'block',move:move[e.key],piece:b.piece});}
@@ -64,29 +74,29 @@ function BlocksBoard({b,act}:{b:Blocks;act:(a:Action)=>void}) {
   const colors=['#2b3332','#72caff','#ffc45c','#b79aff','#86e0af','#ff6f80','#7794ff','#ffaa6c'];
   return <>
     <p className="game-instructions">Work together on one stack. Fill a row to clear it. Either person can move, rotate, or drop.</p>
-    <div className="blocks-layout">
+    <GameStage><div className="blocks-layout">
       <svg className="blocks-grid" viewBox="0 0 100 200" role="img" aria-label={`Falling blocks board, ${b.lines} lines cleared, score ${b.score}`}>
         {b.cells.map((v,i)=>{const x=i%10,y=Math.floor(i/10);const live=!b.over&&active.some(([dx,dy])=>x===b.x+dx&&y===b.y+dy);const preview=!b.over&&active.some(([dx,dy])=>x===b.x+dx&&y===ghost+dy);return <g key={i}><rect x={x*10+.7} y={y*10+.7} width="8.6" height="8.6" rx="1" fill={colors[live?b.shape+1:v]} opacity={live||v?1:preview?.35:.25}/>{(v||live)?<circle cx={x*10+5} cy={y*10+5} r="2.5" fill="#fff8db" opacity=".55"/>:preview?<rect x={x*10+1} y={y*10+1} width="8" height="8" rx="1" fill="none" stroke={colors[b.shape+1]} strokeWidth=".7"/>:null}</g>;})}
         {(b.paused||b.over)&&<><rect y="79" width="100" height="42" fill="#0b1211" opacity=".94"/><text x="50" y="104" textAnchor="middle" fontSize="9" fill="#f3d8a6">{b.over?'STACK COMPLETE':'PAUSED'}</text></>}
       </svg>
       <div className="blocks-sidebar"><span className="small-label">SCORE</span><strong>{b.score}</strong><span className="small-label">LINES</span><strong>{b.lines}</strong><span className="small-label">NEXT</span><svg viewBox="0 0 40 40" aria-label="Next piece" role="img">{shapeCells(b.next).map(([x,y])=><rect key={`${x}-${y}`} x={x*10+1} y={y*10+1} width="8" height="8" rx="2" fill={colors[b.next+1]}/>)}</svg><button className="secondary" onClick={()=>send('pause')} disabled={b.over} aria-label={b.paused?'Resume blocks':'Pause blocks'}>{b.paused?<Play size={18}/>:<Pause size={18}/>}<span>{b.paused?'Resume':'Pause'}</span></button></div>
     </div>
-    <div className="block-controls" role="group" aria-label="Falling block controls">{(['left','rotate','right','down','drop'] as const).map(move=>{
+    </GameStage><div className="block-controls" role="group" aria-label="Falling block controls">{(['left','rotate','right','down','drop'] as const).map(move=>{
       const Icon={left:ArrowLeft,right:ArrowRight,rotate:RotateCw,down:ArrowDown,drop:ChevronsDown}[move];
       return <button key={move} className="secondary" disabled={b.paused||b.over} onClick={()=>send(move)} aria-label={`${move[0].toUpperCase()+move.slice(1)} block`}><Icon size={22}/><span>{move==='drop'?'Drop':move==='rotate'?'Rotate':move==='down'?'Down':move==='left'?'Left':'Right'}</span></button>;
     })}</div><p className="game-instructions keyboard-game">Keyboard: ← → move · ↑ rotate · ↓ lower · Space drop · P pause</p>
   </>;
 }
-export default function GameBoard({view,act,blackout}:{view:GameView;act:(a:Action)=>void;blackout:()=>void}) {
+export default function GameBoard({view,act,blackout,drawing}:{view:GameView;act:(a:Action)=>void;blackout:()=>void;drawing:Omit<DrawingProps,'surface'>}) {
   const {game,shared,side,pending}=view;
   const title={draw:'Free drawing',chess:'Chess',noughts:'Tic-tac-toe',blocks:'Falling lights'}[game.mode];
   const turn=game.mode==='chess'?`${game.turn===0?'Amber / White':'Sky / Black'} to move`:`${game.turn===0?'Amber / X':'Sky / O'} to play`;
   const status=game.mode==='blocks'?game.blocks!.over?'Game over — start a new stack.':game.blocks!.paused?'Paused':'One board. One shared score.':game.result||turn;
-  return <div className={`game-shell game-${game.mode}`}>
+  return <DrawingContext.Provider value={{...drawing,surface:game.round}}><div className={`game-shell game-${game.mode}`}>
     <div className="game-heading"><div><h2>{title}</h2><p role="status" className="game-status">{status}{pending?' · Sending…':''}</p></div><button className="secondary" disabled={pending} onClick={()=>act({type:'mode',mode:game.mode})}><RotateCcw size={16}/>New round</button></div>
-    {game.mode==='chess'&&<ChessBoard key={game.round+game.revision} game={game} side={side} shared={shared} pending={pending} act={act}/>}
-    {game.mode==='noughts'&&<><p className="game-instructions">{shared?`You are ${side===0?'Amber / X':'Sky / O'}.`:'Practice: take turns on this screen.'} Get three lights in a row.</p><div className="noughts-grid" role="group" aria-label="Tic-tac-toe board">{game.marks!.map((mark,i)=><button key={i} className={mark===1?'sky':'amber'} aria-label={`Cell ${i+1}${mark===-1?' empty':mark===0?' X':' O'}`} disabled={mark!==-1||!!game.result||pending||(shared&&side!==game.turn)} onClick={()=>act({type:'mark',cell:i})}>{mark!==-1&&<PegIcon type={mark===0?'x':'o'}/>}</button>)}</div></>}
+    {game.mode==='chess'&&<ChessBoard key={game.round} game={game} side={side} shared={shared} pending={pending} act={act}/>}
+    {game.mode==='noughts'&&<><p className="game-instructions">{shared?`You are ${side===0?'Amber / X':'Sky / O'}.`:'Practice: take turns on this screen.'} Get three lights in a row.</p><GameStage><div className="noughts-grid" role="group" aria-label="Tic-tac-toe board">{game.marks!.map((mark,i)=><button key={i} className={mark===1?'sky':'amber'} aria-label={`Cell ${i+1}${mark===-1?' empty':mark===0?' X':' O'}`} disabled={mark!==-1||!!game.result||pending||(shared&&side!==game.turn)} onClick={()=>act({type:'mark',cell:i})}>{mark!==-1&&<PegIcon type={mark===0?'x':'o'}/>}</button>)}</div></GameStage></>}
     {game.mode==='blocks'&&<BlocksBoard b={game.blocks!} act={act}/>}
     <div className="game-footer"><span>Game lights stay on during the round. Nothing is saved.</span><button className="blackout" onClick={blackout}><Moon size={16}/>Clear game</button></div>
-  </div>;
+  </div></DrawingContext.Provider>;
 }

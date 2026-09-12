@@ -48,7 +48,7 @@ Both screens share a 56×36 logical board with uniform scaling, independent of s
 
 ## Shared games
 
-Choose a mode above the board: **Chess**, **Tic-tac-toe**, or **Falling lights**, a cooperative falling-block game. Without a connected partner, games work as local practice. With two updated browsers, selecting a game switches both boards. Chess and tic-tac-toe assign Amber / White / X and Sky / Black / O; the UI identifies your side. Chess includes legal destinations, castling, en passant, promotion choice, checkmate, and draw detection through [chess.js](https://github.com/jhlywa/chess.js). Either player can start a fresh round. Falling lights uses one shared stack and score with a seven-piece bag, row clearing, ghost landing preview, next piece, increasing gravity, touch buttons, and keyboard controls.
+Choose a mode above the board: **Chess**, **Tic-tac-toe**, or **Falling lights**, a cooperative falling-block game. Without a connected partner, games work as local practice. With two updated browsers, selecting a game switches both boards. Chess and tic-tac-toe assign Amber / White / X and Sky / Black / O; the UI identifies your side. Chess includes legal destinations, castling, en passant, promotion choice, checkmate, and draw detection through [chess.js](https://github.com/jhlywa/chess.js). Either player can start a fresh round. A shared ring of fading pegs surrounds every game: draw with a finger, pen, or mouse in the top, bottom, left, and right margins. Each margin maps to the same logical cells across screen sizes, independently of the protected game rectangle. Drawing color and fade controls stay available. **Clear drawings** erases only the surrounding ink; **Clear game** or Escape ends the round. Ink packets carry the round identifier so old strokes cannot appear in a new game or the free-drawing board. Falling lights uses one shared stack and score with a seven-piece bag, row clearing, ghost landing preview, next piece, increasing gravity, touch buttons, and keyboard controls.
 
 One browser, elected by the pair's random client identifiers, owns the rules and gravity. Encrypted snapshots of the current board replace older snapshots; the other browser retries numbered commands until acknowledged. Duplicates and stale moves are ignored. Game snapshots fit the existing relay limits and expire in the same 800ms server window. A generation counter carried by clears, game messages, and hellos prevents delayed snapshots from restoring a cleared game, even when a clear packet is lost. Gameplay cannot survive either browser leaving or a broken connection. No direct networking, server game storage, or logging is added. Both participants must reload after the update; older clients can still draw but cannot join games.
 
@@ -64,6 +64,8 @@ node tests/relay-batching.mjs
 node tests/relay-pacing.mjs
 node tests/games.mjs
 node tests/games-crypto.mjs
+node tests/game-frame-geometry.mjs
+TEST_BASE_URL=http://localhost:5173/ node tests/game-surround.mjs
 TEST_BASE_URL=http://localhost:5173/ node tests/games-browser.mjs
 node tests/continuous-strokes.mjs
 TEST_BASE_URL=http://localhost:5173/ node tests/continuous-touch.mjs

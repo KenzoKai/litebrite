@@ -31,6 +31,9 @@ try{
  assert.ok(old.ttl>0 && old.ttl<=650,'network batching must preserve remaining fade lifetime');
  assert.equal(delivered.find(s=>s.points.includes(701))?.color,4);
  delivered.length=0;
+ const surface=crypto.randomUUID();sender.draw({points:[1700],color:2,ttl:1000,surface});await flush();
+ assert.equal(delivered.at(-1).surface,surface,'drawing surface must survive encryption and batching');
+ delivered.length=0;
  const board=Array.from({length:2016},(_,i)=>i);
  sender.draw({points:board,color:3,ttl:3000});
  for(let i=0;i<4;i++)await flush();

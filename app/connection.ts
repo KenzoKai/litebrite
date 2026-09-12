@@ -11,7 +11,7 @@ type Events = {
   gameReady?: (leader: boolean) => void;
   gameReset?: () => void;
 };
-type Message = { type: 'hello' | 'stroke' | 'clear' | 'presence' | 'game'; games?: number; generation?: number; payload?: unknown; seq?: number; at?: number; points?: number[]; ages?: number[]; color?: number; ttl?: number; away?: boolean };
+type Message = { type: 'hello' | 'stroke' | 'clear' | 'presence' | 'game'; games?: number; generation?: number; payload?: unknown; seq?: number; at?: number; points?: number[]; surface?: string; ages?: number[]; color?: number; ttl?: number; away?: boolean };
 type Reply = { state: 'waiting' | 'full' | 'connected' | 'left'; partner?: string; session?: string; packets?: string[] };
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -49,7 +49,7 @@ export class LightRoom {
   private clearPending = false;
   private discardIncoming = false;
   private lastPresence = 0;
-  private drawing = new Map<number, { at: number; color: number; ttl: number }>();
+  private drawing = new Map<number, { at: number; color: number; ttl: number; surface?: string }>();
   private timer?: ReturnType<typeof setTimeout>;
   private request?: AbortController;
   private tabChannel?: BroadcastChannel;
@@ -130,9 +130,9 @@ export class LightRoom {
       for (const [point, sample] of this.drawing) {
         const age = Math.ceil((now - sample.at) / 16) * 16;
         if (age >= sample.ttl) { this.drawing.delete(point); continue; }
-        if (!batch || batch.points!.length === 120 || batch.color !== sample.color || batch.ttl !== sample.ttl) {
+        if (!batch || batch.points!.length === 120 || batch.color !== sample.color || batch.ttl !== sample.ttl || batch.surface !== sample.surface) {
           if (messages.length === 8) break; // Remaining cells carry into the next request.
-          batch = { type: 'stroke', points: [], ages: [], color: sample.color, ttl: sample.ttl, at };
+          batch = { type: 'stroke', points: [], ages: [], color: sample.color, ttl: sample.ttl, at, surface: sample.surface };
           messages.push(batch);
         }
         batch.points!.push(point); batch.ages!.push(age);
@@ -185,6 +185,7 @@ export class LightRoom {
     else if (msg.type === 'stroke' && !this.hidden && !discardStrokes) {
       const age = Math.max(0, Date.now() - (msg.at! + this.offset));
       if (!Array.isArray(msg.points) || msg.points.length > 120 || !msg.points.every(p => Number.isInteger(p) && p >= 0 && p < 2016) || !Number.isInteger(msg.color) || msg.color! < 0 || msg.color! > 5 || ![1000, 2000, 3000].includes(msg.ttl!) || age >= msg.ttl!) return;
+      if (msg.surface !== undefined && (typeof msg.surface !== 'string' || !/^[a-f0-9-]{36}$/.test(msg.surface))) return;
       if (msg.ages !== undefined && (!Array.isArray(msg.ages) || msg.ages.length !== msg.points.length || !msg.ages.every(a => Number.isInteger(a) && a >= 0 && a < msg.ttl!))) return;
       const groups = new Map<number, number[]>();
       msg.points.forEach((point, index) => {
@@ -193,7 +194,7 @@ export class LightRoom {
         const points = groups.get(remaining) ?? [];
         points.push(point); groups.set(remaining, points);
       });
-      for (const [ttl, points] of groups) this.events.stroke({ points, color: msg.color!, ttl });
+      for (const [ttl, points] of groups) this.events.stroke({ points, color: msg.color!, ttl, ...(msg.surface ? {surface:msg.surface} : {}) });
     }
   }
   private async poll() {
@@ -249,7 +250,7 @@ export class LightRoom {
     for (const point of stroke.points) {
       if (!Number.isInteger(point) || point < 0 || point >= 2016) continue;
       this.drawing.delete(point);
-      this.drawing.set(point, { at, color: stroke.color, ttl: stroke.ttl });
+      this.drawing.set(point, { at, color: stroke.color, ttl: stroke.ttl, surface: stroke.surface });
     }
   }
 
@@ -258,7 +259,8 @@ export class LightRoom {
     if (JSON.stringify(payload).length <= 2600) this.gamePayload = payload;
   }
 
-  blackout() { this.gameGeneration++; this.gamePayload = undefined; this.events.gameReset?.(); this.clearEpoch++; this.drawing.clear(); this.clearPending = true; this.events.clear(); }
+  clearDrawings() { this.clearEpoch++; this.drawing.clear(); this.clearPending = true; this.events.clear(); }
+  blackout() { this.gameGeneration++; this.gamePayload = undefined; this.events.gameReset?.(); this.clearDrawings(); }
   presence(away: boolean) { this.hidden = away; this.discardIncoming = true; this.blackout(); this.lastPresence = 0; }
   end(notify = true, detail = 'You left the room. Rejoin here or reopen the same link anytime.') {
     if (this.disposed) return;

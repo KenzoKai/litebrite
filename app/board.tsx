@@ -1,17 +1,20 @@
 "use client";
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Hand, Pencil, Minus, Plus, Scan } from 'lucide-react';
 import { COLS, ROWS, INITIAL_VIEW, constrainView, transform, cellAt, zoomAt, lineCells, type Size } from './board-geometry';
+import { frameCell, framePeg, inFrame, type Frame } from './game-frame-geometry';
 export { COLS, ROWS } from './board-geometry';
 export const COLORS = ['#ffc45c', '#ff6f80', '#b79aff', '#72caff', '#86e0af', '#f4eee3'];
-export type Stroke = { points: number[]; color: number; ttl: number };
+export type Stroke = { points: number[]; color: number; ttl: number; surface?: string };
 type Peg = { color: number; born: number; ttl: number };
 type Point = { x: number; y: number };
-export default function Board({ color, fade, clearVersion, onDraw, subscribe }: {
+export default function Board({ color, fade, clearVersion, onDraw, subscribe, cutout, surface }: {
   color: number; fade: number; clearVersion: number;
-  onDraw?: (s: Stroke) => void; subscribe?: (fn: (s: Stroke) => void) => () => void;
+  cutout?: RefObject<HTMLDivElement | null>; surface?: string;
+  onDraw?: (s: Stroke) => void; subscribe?: (fn: (s: Stroke | null) => void) => () => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const frame = useRef<Frame | null>(null);
   const pegs = useRef(new Map<number, Peg>());
   const last = useRef<Point | null>(null);
   const size = useRef<Size>({ width: 1, height: 1 });
@@ -20,14 +23,14 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
   const gesture = useRef(false);
   const nativeTouch = useRef(false);
   const touchInput = useRef<(event: TouchEvent) => void>(() => undefined);
-  const cursor = useRef({ x: 28, y: 18 });
+  const cursor = useRef({ x: 28, y: cutout ? 4 : 18 });
   const focused = useRef(false);
   const invalidate = useRef<() => void>(() => undefined);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState(false);
   const [touched, setTouched] = useState(false);
-  const current = useRef({ color, fade, onDraw, pan });
-  current.current = { color, fade, onDraw, pan };
+  const current = useRef({ color, fade, onDraw, pan, surface });
+  current.current = { color, fade, onDraw, pan, surface };
 
   function resetGesture() { pointers.current.clear(); last.current = null; gesture.current = false; }
   function refreshView() { view.current = constrainView(view.current, size.current); setZoom(view.current.zoom); invalidate.current(); }
@@ -36,7 +39,8 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
 
   useEffect(() => { pegs.current.clear(); last.current = null; invalidate.current(); }, [clearVersion]);
   useEffect(() => subscribe?.(s => {
-    if (document.hidden) return;
+    if (s === null) { pegs.current.clear(); last.current = null; invalidate.current(); return; }
+    if (document.hidden || s.surface !== current.current.surface) return;
     for (const p of s.points) pegs.current.set(p, { color: s.color, born: performance.now(), ttl: s.ttl });
     setTouched(true); invalidate.current();
   }), [subscribe]);
@@ -53,13 +57,16 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
       ctx.setTransform(bw / w, 0, 0, bh / h, 0, 0);
       ctx.clearRect(0, 0, w, h);
       const { scale, left, top } = transform(size.current, view.current);
-      ctx.fillStyle = '#101516'; ctx.fillRect(left, top, COLS * scale, ROWS * scale);
+      ctx.fillStyle = '#101516';
+      if (frame.current) ctx.fillRect(0, 0, w, h); else ctx.fillRect(left, top, COLS * scale, ROWS * scale);
       ctx.strokeStyle = '#38413d'; ctx.lineWidth = 1;
-      ctx.strokeRect(left + .5, top + .5, COLS * scale - 1, ROWS * scale - 1);
-      const now = performance.now(), r = Math.max(1, scale * .22);
+      if (!frame.current) ctx.strokeRect(left + .5, top + .5, COLS * scale - 1, ROWS * scale - 1);
+      const now = performance.now();
       for (const [key, peg] of pegs.current) if (now - peg.born >= peg.ttl) pegs.current.delete(key);
       for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
-        const px = left + (x + .5) * scale, py = top + (y + .5) * scale;
+        if (frame.current && !inFrame(x,y)) continue;
+        const pegPosition = frame.current ? framePeg(x,y,frame.current) : {x:left+(x+.5)*scale,y:top+(y+.5)*scale,r:Math.max(1,scale*.22)};
+        const {x:px,y:py,r} = pegPosition;
         if (px < -r || px > w + r || py < -r || py > h + r) continue;
         const peg = pegs.current.get(y * COLS + x);
         const alpha = peg ? Math.pow(Math.max(0, 1 - (now - peg.born) / peg.ttl), 1.15) : 0;
@@ -75,7 +82,8 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
       ctx.globalAlpha = 1; ctx.shadowBlur = 0;
       if (focused.current) {
         ctx.strokeStyle = '#d7c597'; ctx.lineWidth = 1.5;
-        ctx.strokeRect(left + cursor.current.x * scale, top + cursor.current.y * scale, scale, scale);
+        if (frame.current && inFrame(cursor.current.x,cursor.current.y)) { const p=framePeg(cursor.current.x,cursor.current.y,frame.current); ctx.strokeRect(p.x-p.r*2,p.y-p.r*2,p.r*4,p.r*4); }
+        else if (!frame.current) ctx.strokeRect(left + cursor.current.x * scale, top + cursor.current.y * scale, scale, scale);
       }
       if (pegs.current.size) raf = requestAnimationFrame(draw);
     };
@@ -83,11 +91,13 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
     const resize = () => {
       const rect = el.getBoundingClientRect();
       size.current = { width: Math.max(1, rect.width), height: Math.max(1, rect.height) };
+      const center = cutout?.current?.getBoundingClientRect();
+      frame.current = center ? { ...size.current, left:center.left-rect.left, top:center.top-rect.top, right:center.right-rect.left, bottom:center.bottom-rect.top } : null;
       view.current = constrainView(view.current, size.current);
       last.current = null;
       invalidate.current();
     };
-    const observer = new ResizeObserver(resize); observer.observe(el); resize();
+    const observer = new ResizeObserver(resize); observer.observe(el); if(cutout?.current)observer.observe(cutout.current); resize();
     // One authoritative finger stream: native touch survives loss of pointer capture.
     nativeTouch.current = typeof window.TouchEvent !== 'undefined';
     const handleTouch = (event: TouchEvent) => {
@@ -104,15 +114,17 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
     const visibility = () => { if (document.hidden) { pegs.current.clear(); pointers.current.clear(); last.current = null; } invalidate.current(); };
     document.addEventListener('visibilitychange', visibility);
     return () => { for (const type of touchEvents) el.removeEventListener(type, handleTouch); observer.disconnect(); cancelAnimationFrame(raf); invalidate.current = () => undefined; density.removeEventListener('change', changedDensity); window.removeEventListener('resize', resize); document.removeEventListener('visibilitychange', visibility); };
-  }, []);
+  }, [cutout]);
 
   function put(points: number[]) {
-    const stroke = { points, color: current.current.color, ttl: current.current.fade };
+    if (frame.current) points = points.filter(p => inFrame(p % COLS, Math.floor(p / COLS)));
+    if (!points.length) return;
+    const stroke = { points, color: current.current.color, ttl: current.current.fade, ...(current.current.surface ? {surface:current.current.surface} : {}) };
     for (const p of points) pegs.current.set(p, { color: stroke.color, born: performance.now(), ttl: stroke.ttl });
     current.current.onDraw?.(stroke); setTouched(true); invalidate.current();
   }
   function light(p: Point) {
-    const cell = cellAt(p.x, p.y, size.current, view.current);
+    const cell = frame.current ? frameCell(p.x,p.y,frame.current) : cellAt(p.x, p.y, size.current, view.current);
     if (!cell) { last.current = null; return; } // Letterbox space never becomes an edge stroke.
     put(lineCells(last.current || cell, cell)); last.current = cell;
   }
@@ -130,6 +142,7 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
     const old = pointers.current.get(id); if (!old) return;
     const before = [...pointers.current.values()];
     pointers.current.set(id, p);
+    if (frame.current && pointers.current.size > 1) { last.current = null; return; }
     if (pointers.current.size === 2) {
       const after = [...pointers.current.values()];
       const mid = (a: Point[]) => ({ x: (a[0].x + a[1].x) / 2, y: (a[0].y + a[1].y) / 2 });
@@ -163,8 +176,8 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
     }
   };
   return <>
-    <div className="canvas-shell">
-      <canvas ref={canvas} tabIndex={0} aria-label="Shared light board. Touch or drag to draw. Use arrow keys to move and Space to light a peg. Pinch with two fingers to zoom."
+    <div className={`canvas-shell ${cutout ? 'frame-canvas' : ''}`}>
+      <canvas ref={canvas} tabIndex={0} aria-label={cutout ? "Shared drawing area around the game. Touch or drag to draw fading lights." : "Shared light board. Touch or drag to draw. Use arrow keys to move and Space to light a peg. Pinch with two fingers to zoom."}
         className={pan ? 'pan-mode' : ''}
         onContextMenu={e => e.preventDefault()}
         onFocus={() => { focused.current = true; invalidate.current(); }}
@@ -183,20 +196,21 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
         }}
         onPointerUp={e => { if (e.pointerType !== 'touch' || !nativeTouch.current) release(e.pointerId); }} onPointerCancel={e => { if (e.pointerType !== 'touch' || !nativeTouch.current) release(e.pointerId); }} onLostPointerCapture={e => { if (e.pointerType !== 'touch' || !nativeTouch.current) release(e.pointerId); }}
         onKeyDown={e => {
+          if (e.key !== 'Escape') e.stopPropagation();
           const delta: Record<string, Point> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
           if (delta[e.key]) { e.preventDefault(); focused.current = true; cursor.current = { x: Math.max(0, Math.min(COLS - 1, cursor.current.x + delta[e.key].x)), y: Math.max(0, Math.min(ROWS - 1, cursor.current.y + delta[e.key].y)) }; if (e.shiftKey) put([cursor.current.y * COLS + cursor.current.x]); else invalidate.current(); }
           else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); put([cursor.current.y * COLS + cursor.current.x]); }
-          else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomBy(1.5); }
-          else if (e.key === '-') { e.preventDefault(); zoomBy(1 / 1.5); }
-          else if (e.key === '0') { e.preventDefault(); fit(); }
+          else if (!cutout && (e.key === '+' || e.key === '=')) { e.preventDefault(); zoomBy(1.5); }
+          else if (!cutout && e.key === '-') { e.preventDefault(); zoomBy(1 / 1.5); }
+          else if (!cutout && e.key === '0') { e.preventDefault(); fit(); }
         }}
       />
-      {!touched && <div className="board-hint"><span className="hint-spark">✦</span><span>Leave a little light.</span><small>Draw with your finger, pen, or mouse.</small></div>}
+      {!cutout && !touched && <div className="board-hint"><span className="hint-spark">✦</span><span>Leave a little light.</span><small>Draw with your finger, pen, or mouse.</small></div>}
     </div>
-    <div className="view-controls" aria-label="Board view controls">
+    {!cutout && <div className="view-controls" aria-label="Board view controls">
       <div className="tool-group"><button className={!pan ? 'view-button active' : 'view-button'} aria-pressed={!pan} onClick={() => { setPan(false); resetGesture(); }}><Pencil size={17}/>Draw</button><button className={pan ? 'view-button active' : 'view-button'} aria-pressed={pan} onClick={() => { setPan(true); resetGesture(); }}><Hand size={17}/>Move</button></div>
       <span className="view-help">{pan ? 'Drag to move your view' : 'Pinch to zoom · same board on every screen'}</span>
       <div className="tool-group zoom-tools"><button className="view-button icon-button" aria-label="Zoom out" disabled={zoom <= 1} onClick={() => zoomBy(1 / 1.5)}><Minus size={17}/></button><output aria-label="Board zoom">{Math.round(zoom * 100)}%</output><button className="view-button icon-button" aria-label="Zoom in" disabled={zoom >= 4} onClick={() => zoomBy(1.5)}><Plus size={17}/></button><button className="view-button" onClick={fit}><Scan size={17}/>Fit</button></div>
-    </div>
+    </div>}
   </>;
 }
