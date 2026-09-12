@@ -22,7 +22,11 @@ Open the printed local URL. Internet access is required to pair browsers. The de
 - The board holds at most 2,016 pegs in RAM. Every peg expires within 1–3 seconds. Receiver-side expiry accounts for transit age using a handshake clock offset. Already expired packets are discarded.
 - Blackout / Escape clears both boards. Visibility changes clear both boards and mark the participant away. Incoming strokes are discarded while the page is hidden. No history is sent on return.
 - Invitation expiry: 10 minutes. Session expiry: one hour. Lost connections end the room; reconnect with a new invitation. A heartbeat detects silent connection loss.
-- Six colors, touch/mouse input, accessible color/fade controls, native sharing where available, clipboard sharing with manual-copy fallback.
+- A viewport-sized workspace with visible 44px touch controls on portrait/landscape phones, tablets, and desktops; safe-area insets and dynamic viewport height accommodate mobile browser chrome.
+- Shared 56×36 logical coordinates are mapped with uniform scaling and letterboxing, so drawing proportions are preserved across different aspect ratios. Device pixel ratio only controls raster sharpness and never affects transmitted coordinates. Existing clients remain wire-compatible.
+- Local 1–4× zoom, two-finger pinch/pan, a Move tool, and Fit reset. Zooming and resizing preserve unexpired pegs without replaying or persisting strokes. Empty margins do not draw stray edge lines.
+- Six colors, touch/pen/mouse input, accessible color/fade controls, native sharing where available, clipboard sharing with manual-copy fallback. Keyboard users can focus the board, move with arrows, and light pegs with Space; Shift+arrows draws a line.
+- An event-driven canvas sleeps when no lights need repainting, follows display-density changes, and bounds the backing raster to eight million pixels.
 
 ## Privacy and limits
 
@@ -36,6 +40,8 @@ Fading reduces lingering content. It cannot prevent a short word from being read
 
 ```sh
 npx tsc --noEmit
+node tests/board-geometry.mjs
+node tests/responsive-board.mjs
 node tests/live-smoke.mjs
 ```
 
