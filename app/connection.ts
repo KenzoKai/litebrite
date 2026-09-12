@@ -8,7 +8,7 @@ type Events = {
   clear: () => void;
   away: (away: boolean) => void;
 };
-type Message = { type: 'hello' | 'stroke' | 'clear' | 'presence'; seq?: number; at?: number; points?: number[]; color?: number; ttl?: number; away?: boolean };
+type Message = { type: 'hello' | 'stroke' | 'clear' | 'presence'; seq?: number; at?: number; points?: number[]; ages?: number[]; color?: number; ttl?: number; away?: boolean };
 type Reply = { state: 'waiting' | 'full' | 'connected' | 'left'; partner?: string; session?: string; packets?: string[] };
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -46,7 +46,7 @@ export class LightRoom {
   private clearPending = false;
   private discardIncoming = false;
   private lastPresence = 0;
-  private drawing?: { points: Map<number, number>; color: number; ttl: number };
+  private drawing = new Map<number, { at: number; color: number; ttl: number }>();
   private timer?: ReturnType<typeof setTimeout>;
   private request?: AbortController;
   private tabChannel?: BroadcastChannel;
@@ -92,12 +92,12 @@ export class LightRoom {
     if (this.session === session && this.partner === partner) return;
     this.epoch++; this.session = session; this.partner = partner;
     this.joined = false; this.received = 0; this.lastSeen = 0; this.lastPresence = 0;
-    this.drawing = undefined; this.clearPending = false;
+    this.drawing.clear(); this.clearPending = false;
     this.events.clear(); this.events.away(false);
   }
   private async pack(message: Message): Promise<string> {
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const bytes = encoder.encode(JSON.stringify({ ...message, seq: ++this.sent, at: Date.now() }));
+    const bytes = encoder.encode(JSON.stringify({ ...message, seq: ++this.sent, at: message.at ?? Date.now() }));
     try {
       const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv,
         additionalData: encoder.encode(`${this.session}:${this.identity}:${this.partner}`) }, this.key!, bytes);
@@ -111,11 +111,22 @@ export class LightRoom {
       messages.push({ type: 'hello', away: this.hidden }); this.lastPresence = performance.now();
     }
     if (this.clearPending) { messages.push({ type: 'clear' }); this.clearPending = false; }
-    const drawing = this.drawing; this.drawing = undefined;
-    if (drawing && this.joined && !this.hidden) {
-      const now = performance.now();
-      const points = [...drawing.points].filter(entry => now - entry[1] < 300).map(entry => entry[0]);
-      if (points.length) messages.push({ type: 'stroke', points, color: drawing.color, ttl: drawing.ttl });
+    // Keep each peg's latest state until its own fade deadline. A fast curve can
+    // cross hundreds of cells between requests; never turn it into an oversized packet.
+    if (this.joined && !this.hidden) {
+      const now = performance.now(), at = Date.now();
+      let batch: Message | undefined;
+      for (const [point, sample] of this.drawing) {
+        const age = Math.ceil((now - sample.at) / 16) * 16;
+        if (age >= sample.ttl) { this.drawing.delete(point); continue; }
+        if (!batch || batch.points!.length === 120 || batch.color !== sample.color || batch.ttl !== sample.ttl) {
+          if (messages.length === 8) break; // Remaining cells carry into the next request.
+          batch = { type: 'stroke', points: [], ages: [], color: sample.color, ttl: sample.ttl, at };
+          messages.push(batch);
+        }
+        batch.points!.push(point); batch.ages!.push(age);
+        this.drawing.delete(point);
+      }
     }
     const epoch = this.epoch, clearEpoch = this.clearEpoch;
     const packets: string[] = [];
@@ -147,16 +158,25 @@ export class LightRoom {
     }
     if (!this.joined) return;
     this.lastSeen = performance.now();
-    if (msg.type === 'clear') { this.drawing = undefined; this.events.clear(); }
+    if (msg.type === 'clear') { this.drawing.clear(); this.events.clear(); }
     else if (msg.type === 'presence') this.events.away(!!msg.away);
     else if (msg.type === 'stroke' && !this.hidden && !discardStrokes) {
       const age = Math.max(0, Date.now() - (msg.at! + this.offset));
       if (!Array.isArray(msg.points) || msg.points.length > 120 || !msg.points.every(p => Number.isInteger(p) && p >= 0 && p < 2016) || !Number.isInteger(msg.color) || msg.color! < 0 || msg.color! > 5 || ![1000, 2000, 3000].includes(msg.ttl!) || age >= msg.ttl!) return;
-      this.events.stroke({ points: msg.points, color: msg.color!, ttl: msg.ttl! - age });
+      if (msg.ages !== undefined && (!Array.isArray(msg.ages) || msg.ages.length !== msg.points.length || !msg.ages.every(a => Number.isInteger(a) && a >= 0 && a < msg.ttl!))) return;
+      const groups = new Map<number, number[]>();
+      msg.points.forEach((point, index) => {
+        const remaining = msg.ttl! - age - (msg.ages?.[index] ?? 0);
+        if (remaining <= 0) return;
+        const points = groups.get(remaining) ?? [];
+        points.push(point); groups.set(remaining, points);
+      });
+      for (const [ttl, points] of groups) this.events.stroke({ points, color: msg.color!, ttl });
     }
   }
   private async poll() {
     if (this.disposed) return;
+    const started = performance.now();
     let delay = 100;
     const controller = new AbortController(); this.request = controller;
     const timeout = setTimeout(() => controller.abort(), 4000);
@@ -179,38 +199,38 @@ export class LightRoom {
       } else if (reply.state === 'connected' && /^[a-f0-9]{32}$/.test(reply.session || '') && /^[a-f0-9]{32}$/.test(reply.partner || '') && reply.partner !== this.identity) {
         this.resetSession(reply.session!, reply.partner!);
         if (!this.joined) this.state('joining', 'Making an encrypted connection through the server.');
-        if (Array.isArray(reply.packets) && reply.packets.length <= 8 && clearEpoch === this.clearEpoch) {
+        if (Array.isArray(reply.packets) && reply.packets.length <= 64 && clearEpoch === this.clearEpoch) {
           for (const packet of reply.packets) if (typeof packet === 'string') {
             try { await this.receive(packet, discardIncoming); } catch { /* Discard unauthenticated data without logging it. */ }
           }
         }
         if (this.joined && performance.now() - this.lastSeen > 5000) {
-          this.joined = false; this.drawing = undefined; this.events.clear(); this.state('joining', 'Waiting for the other browser to respond securely.');
+          this.joined = false; this.drawing.clear(); this.events.clear(); this.state('joining', 'Waiting for the other browser to respond securely.');
         }
         if (clearEpoch === this.clearEpoch) this.discardIncoming = this.hidden;
         delay = this.hidden ? 700 : 100;
       } else throw new Error('invalid_relay_response');
     } catch {
       if (!this.disposed) {
-        this.resetSession(); this.drawing = undefined;
+        this.resetSession(); this.drawing.clear();
         this.state('waiting', 'The private server connection is interrupted. Retrying automatically.'); delay = 1000;
       }
     } finally {
       clearTimeout(timeout); if (this.request === controller) this.request = undefined;
-      if (!this.disposed) this.timer = setTimeout(() => { void this.poll(); }, delay);
+      if (!this.disposed) this.timer = setTimeout(() => { void this.poll(); }, Math.max(0, delay - (performance.now() - started)));
     }
   }
   draw(stroke: Stroke) {
     if (!this.joined || this.hidden || this.disposed) return;
-    if (!this.drawing || this.drawing.color !== stroke.color || this.drawing.ttl !== stroke.ttl) {
-      this.drawing = { points: new Map(), color: stroke.color, ttl: stroke.ttl };
-    }
+    const at = performance.now();
     for (const point of stroke.points) {
-      this.drawing.points.delete(point); this.drawing.points.set(point, performance.now());
-      if (this.drawing.points.size > 120) this.drawing.points.delete(this.drawing.points.values().next().value!);
+      if (!Number.isInteger(point) || point < 0 || point >= 2016) continue;
+      this.drawing.delete(point);
+      this.drawing.set(point, { at, color: stroke.color, ttl: stroke.ttl });
     }
   }
-  blackout() { this.clearEpoch++; this.drawing = undefined; this.clearPending = true; this.events.clear(); }
+
+  blackout() { this.clearEpoch++; this.drawing.clear(); this.clearPending = true; this.events.clear(); }
   presence(away: boolean) { this.hidden = away; this.discardIncoming = true; this.blackout(); this.lastPresence = 0; }
   end(notify = true, detail = 'You left the room. Rejoin here or reopen the same link anytime.') {
     if (this.disposed) return;
@@ -226,7 +246,7 @@ export class LightRoom {
     // keepalive lets pagehide release the seat; a server tombstone rejects late in-flight polls.
     if (this.roomHash && this.endpoint) void fetch(this.endpoint, { method: 'POST', keepalive: true, credentials: 'omit', referrerPolicy: 'no-referrer',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'leave', room: this.roomHash, token: this.token, id: this.identity }) }).catch(() => undefined);
-    this.key = undefined; this.drawing = undefined; this.joined = false;
+    this.key = undefined; this.drawing.clear(); this.joined = false;
     this.events.clear(); this.events.away(false);
   }
 }

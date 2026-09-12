@@ -22,6 +22,12 @@ try{
  await post({...a,session:pair.session,packets:[packet]});
  await new Promise(r=>setTimeout(r,850));
  assert.deepEqual((await post({...b,session:pair.session})).packets,[],'expired ciphertext is never delivered');
+ // Several sender requests can finish before a mobile recipient polls again.
+ const burst=Array.from({length:24},()=>randomBytes(12).toString('base64url')+'.'+randomBytes(600).toString('base64url'));
+ for(let i=0;i<burst.length;i+=8)await post({...a,session:pair.session,packets:burst.slice(i,i+8)});
+ const buffered=(await post({...b,session:pair.session})).packets;
+ // Ciphertext byte cap is 24KB: this burst is intentionally below it.
+ assert.deepEqual(buffered,burst,'multiple fresh batches must survive a slower receiver');
  await post({...a,action:'leave'});assert.equal((await post(a)).state,'left','late poll cannot reoccupy a departed seat');
  const replacement=await post(c);assert.equal(replacement.state,'connected');assert.notEqual(replacement.session,pair.session);
  assert.deepEqual((await post({...b,session:pair.session,packets:[packet]})).packets,[]);

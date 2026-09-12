@@ -104,7 +104,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!is_string($packet) || strlen($packet) > 5000 || !preg_match('/^[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{20,4983}$/D', $packet)) continue;
                 foreach ($room['members'] as $otherToken => &$other) if ($otherToken !== $token) {
                   $other['inbox'][] = ['ciphertext' => $packet, 'expires' => $now + 800];
-                  $other['inbox'] = array_slice($other['inbox'], -8);
+                  // A slower receiver may collect several sender batches between polls.
+                  // Bound both packet count and bytes so all 16 rooms fit shared RAM.
+                  while (count($other['inbox']) > 64 || array_sum(array_map(fn($p) => strlen($p['ciphertext']), $other['inbox'])) > 24000) {
+                    array_shift($other['inbox']);
+                  }
                 } unset($other);
               }
             }

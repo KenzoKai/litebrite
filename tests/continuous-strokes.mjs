@@ -35,8 +35,8 @@ try{
  assert.equal(received.at(-1).type,'clear');assert.ok(!received.some(m=>m.points?.includes(1000)));
  room.draw({points:[1001],color:0,ttl:1000});room.presence(true);await flush();
  assert.ok(!received.some(m=>m.points?.includes(1001)));
- room.presence(false);room.draw({points:[1002],color:0,ttl:1000});await sleep(350);await flush();
- assert.ok(!received.some(m=>m.points?.includes(1002)),'stalled input is discarded rather than replayed');
+ room.presence(false);room.draw({points:[1002],color:0,ttl:1000});await sleep(1050);await flush();
+ assert.ok(!received.some(m=>m.points?.includes(1002)),'expired input is discarded rather than replayed');
  room.draw({points:[1003],color:0,ttl:1000});room.destroy();assert.deepEqual(await room.makePackets(),[]);
  console.log('PASS: blackout, hiding, stale batches, and disconnect discard pending strokes');
 }finally{room.destroy();}

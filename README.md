@@ -8,11 +8,11 @@ All current clients communicate through `https://litebrite.it/relay.php` using H
 
 The room link keeps a random 256-bit secret after `#room=`. The browser imports it as a non-extractable AES-GCM key. The relay receives a domain-separated SHA-256 capability hash, not the secret or original room ID. It sees only ciphertext and random client/session identifiers. Directional client IDs and a fresh pair-session ID are authenticated with each encrypted message. Both browsers verify an encrypted hello before showing Connected. Sequence numbers reject replays. A host that serves malicious JavaScript or a compromised browser is outside this protection.
 
-There are no accounts, database, application request logs, analytics, cookies, local storage, or drawing history. The PHP relay holds at most eight encrypted packets per recipient in a bounded shared-memory segment. Undelivered ciphertext expires after 800ms and is removed on the next request; delivery consumes packets once. No ciphertext is written to application files. An empty lockfile coordinates PHP workers. The OS/provider can manage RAM and logs independently; forensic erasure and zero infrastructure logging are not guaranteed.
+There are no accounts, database, application request logs, analytics, cookies, local storage, or drawing history. The PHP relay holds at most 64 encrypted packets (24KB of ciphertext) per recipient in a bounded shared-memory segment. Undelivered ciphertext expires after 800ms and is removed on the next request; delivery consumes packets once. No ciphertext is written to application files. An empty lockfile coordinates PHP workers. The OS/provider can manage RAM and logs independently; forensic erasure and zero infrastructure logging are not guaranteed.
 
 Session membership expires after 12 seconds without a poll. Leaving clears the queue and changes the pair session; a 15-second tombstone rejects late polls from the departed client. A new participant cannot receive an earlier pair's packets. The relay supports up to 16 simultaneous rooms, bounds request size and memory, and limits polling per member. If the relay fails or reaches capacity, clients clear the board and retry rather than exposing IPs through another transport.
 
-Browser drawing batches are bounded to 120 fresh cells and discarded after 300ms if sending stalls. Hidden pages discard incoming drawings. Blackout, leaving, and connection failures clear transient state. Browser memory contains up to 2,016 fading pegs, never a saved transcript. Fading cannot prevent screenshots, screen recordings, or a recipient copying what is visible.
+Browser drawing packets carry at most 120 cells each, with up to eight packets per request. Up to 2,016 pending cells retain their individual colors and original fade deadlines; overflow drains on subsequent requests and expired cells are discarded. Sample ages travel inside the encryption so batching does not restart a light’s lifetime. Foreground polls target 100ms between request starts, without an extra pause after a slow response. Hidden pages discard incoming drawings. Blackout, leaving, and connection failures clear transient state. Browser memory contains up to 2,016 fading pegs, never a saved transcript. Fading cannot prevent screenshots, screen recordings, or a recipient copying what is visible.
 
 Room links remain reusable and may be saved in browser history, bookmarks, clipboard, or sharing apps. Anyone with the full link can occupy an available spot. Additional tabs/devices count as participants. Same-origin tabs coordinate without persistent storage. Create a different room for a new link; old links are not revoked.
 
@@ -54,12 +54,14 @@ npm run lint
 npm run test:geometry
 node tests/relay-api.mjs
 node tests/relay-crypto.mjs
+node tests/relay-batching.mjs
+node tests/relay-pacing.mjs
 node tests/continuous-strokes.mjs
 TEST_BASE_URL=http://localhost:5173/ node tests/continuous-touch.mjs
 TEST_BASE_URL=http://localhost:5173/ node tests/touch-recovery.mjs
 TEST_BASE_URL=http://localhost:5173/ node tests/live-smoke.mjs
 ```
 
-`RELAY_TEST_URL` overrides the PHP endpoint for relay tests. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` selects a Chromium binary; otherwise install it with `npx playwright install chromium`. Tests create isolated, random rooms and do not use existing user rooms. The sustained-touch test forbids WebRTC and WebSocket construction and verifies two-way drawing and expiry through the relay. The backend test checks admission, identity binding, one-time delivery, packet expiry, and stale-session isolation. Screenshots in `outputs/` are ignored.
+`RELAY_TEST_URL` overrides the PHP endpoint for relay tests. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` selects a Chromium binary; otherwise install it with `npx playwright install chromium`. Tests create isolated, random rooms and do not use existing user rooms. The sustained-touch test forbids WebRTC and WebSocket construction and verifies two-way drawing and expiry through the relay. `TEST_RELAY_LATENCY_MS=150` adds delay to each browser relay request; `TEST_FADE_SECONDS=2` selects a longer fade for slower-network tests. A one-second fade can expire in transit on very slow connections. The backend test checks burst buffering, admission, identity binding, one-time delivery, packet expiry, and stale-session isolation. Screenshots in `outputs/` are ignored.
 
 The optional WebMCP tool `blackout_board` clears the board and never exposes drawings or invitation secrets.

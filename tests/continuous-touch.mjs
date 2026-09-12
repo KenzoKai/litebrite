@@ -27,8 +27,15 @@ try {
   const invite=await desktop.locator('#invite-link').inputValue();
   await phone.goto(invite);
   for(const p of [desktop,phone]) await p.getByText('CONNECTED · JUST YOU TWO',{exact:true}).waitFor({timeout:40000});
+  const latency = Number(process.env.TEST_RELAY_LATENCY_MS || 0);
+  if (latency) for (const context of [desktopContext, phoneContext]) {
+    await context.route('**/relay.php', async route => {
+      await new Promise(resolve => setTimeout(resolve, latency));
+      await route.continue();
+    });
+  }
   for(const [sender,receiver,context] of [[phone,desktop,phoneContext],[desktop,phone,desktopContext]]) {
-    await sender.getByRole('radio',{name:'Fade after 1 second',exact:true}).check();
+    await sender.getByRole('radio',{name:`Fade after ${process.env.TEST_FADE_SECONDS || 1} second${Number(process.env.TEST_FADE_SECONDS || 1) === 1 ? '' : 's'}`,exact:true}).check();
     const canvas=sender.locator('canvas'),r=await canvas.boundingBox(),cdp=await context.newCDPSession(sender);
     assert.equal(await canvas.evaluate(c=>{
       const event=new Event('touchmove',{bubbles:true,cancelable:true});c.dispatchEvent(event);return event.defaultPrevented;
@@ -45,7 +52,7 @@ try {
       assert.equal(await receiver.getByText('CONNECTED · JUST YOU TWO',{exact:true}).isVisible(),true);
     }
     await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
-    await sender.waitForTimeout(1300);
+    await sender.waitForTimeout(Number(process.env.TEST_FADE_SECONDS || 1) * 1000 + 300);
     assert.equal(await lit(sender),false);assert.equal(await lit(receiver),false);
     console.log(`PASS: eight-second uninterrupted ${sender===phone?'phone → desktop':'desktop → phone'} touch, then complete fade`);
     await cdp.detach();

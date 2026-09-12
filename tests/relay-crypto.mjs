@@ -17,6 +17,10 @@ try{
  await assert.rejects(b.receive(iv+'.'+changed.toString('base64url')));
  await b.receive(await a.pack({type:'stroke',points:[124],color:2,ttl:2000}),true);
  assert.equal(strokes.length,1,'resuming must discard packets queued while away');
+ for (const ages of [[-1], [3000], [], [1.5], 'invalid']) {
+  await b.receive(await a.pack({type:'stroke',points:[125],ages,color:2,ttl:2000}));
+ }
+ assert.equal(strokes.length,1,'invalid sample ages must not extend or replay lights');
  b.resetSession('session-two','a');await assert.rejects(b.receive(stroke));
  b.resetSession('session-one','someone-else');await assert.rejects(b.receive(stroke));
  b.resetSession('session-one','a');b.key=await crypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']);
