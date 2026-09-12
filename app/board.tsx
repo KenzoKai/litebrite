@@ -18,14 +18,16 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
   const view = useRef({ ...INITIAL_VIEW });
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef(false);
+  const nativeTouch = useRef(false);
+  const touchInput = useRef<(event: TouchEvent) => void>(() => undefined);
   const cursor = useRef({ x: 28, y: 18 });
   const focused = useRef(false);
   const invalidate = useRef<() => void>(() => undefined);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState(false);
   const [touched, setTouched] = useState(false);
-  const current = useRef({ color, fade, onDraw });
-  current.current = { color, fade, onDraw };
+  const current = useRef({ color, fade, onDraw, pan });
+  current.current = { color, fade, onDraw, pan };
 
   function resetGesture() { pointers.current.clear(); last.current = null; gesture.current = false; }
   function refreshView() { view.current = constrainView(view.current, size.current); setZoom(view.current.zoom); invalidate.current(); }
@@ -86,11 +88,14 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
       invalidate.current();
     };
     const observer = new ResizeObserver(resize); observer.observe(el); resize();
-    // Safari's native selection/callout gestures are separate from touch-action.
-    // Non-passive listeners keep a held finger owned by this drawing surface.
-    const preventTouchDefault = (event: TouchEvent) => { if (event.cancelable) event.preventDefault(); };
-    el.addEventListener('touchstart', preventTouchDefault, { passive: false });
-    el.addEventListener('touchmove', preventTouchDefault, { passive: false });
+    // One authoritative finger stream: native touch survives loss of pointer capture.
+    nativeTouch.current = typeof window.TouchEvent !== 'undefined';
+    const handleTouch = (event: TouchEvent) => {
+      if (event.cancelable) event.preventDefault();
+      if (event.changedTouches) touchInput.current(event);
+    };
+    const touchEvents = ['touchstart', 'touchmove', 'touchend', 'touchcancel'] as const;
+    for (const type of touchEvents) el.addEventListener(type, handleTouch, { passive: false });
     // ResizeObserver does not always fire when moving a window between screens of equal CSS size.
     let density = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
     const changedDensity = () => { density.removeEventListener('change', changedDensity); density = matchMedia(`(resolution: ${devicePixelRatio}dppx)`); density.addEventListener('change', changedDensity); resize(); };
@@ -98,7 +103,7 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
     window.addEventListener('resize', resize);
     const visibility = () => { if (document.hidden) { pegs.current.clear(); pointers.current.clear(); last.current = null; } invalidate.current(); };
     document.addEventListener('visibilitychange', visibility);
-    return () => { el.removeEventListener('touchstart', preventTouchDefault); el.removeEventListener('touchmove', preventTouchDefault); observer.disconnect(); cancelAnimationFrame(raf); invalidate.current = () => undefined; density.removeEventListener('change', changedDensity); window.removeEventListener('resize', resize); document.removeEventListener('visibilitychange', visibility); };
+    return () => { for (const type of touchEvents) el.removeEventListener(type, handleTouch); observer.disconnect(); cancelAnimationFrame(raf); invalidate.current = () => undefined; density.removeEventListener('change', changedDensity); window.removeEventListener('resize', resize); document.removeEventListener('visibilitychange', visibility); };
   }, []);
 
   function put(points: number[]) {
@@ -115,50 +120,68 @@ export default function Board({ color, fade, clearVersion, onDraw, subscribe }: 
     const rect = canvas.current!.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
+  function startPointer(id: number, p: Point) {
+    focused.current = false;
+    pointers.current.set(id, p); last.current = null;
+    gesture.current = pointers.current.size > 1;
+    if (!current.current.pan && !gesture.current) light(p);
+  }
+  function movePointer(id: number, p: Point) {
+    const old = pointers.current.get(id); if (!old) return;
+    const before = [...pointers.current.values()];
+    pointers.current.set(id, p);
+    if (pointers.current.size === 2) {
+      const after = [...pointers.current.values()];
+      const mid = (a: Point[]) => ({ x: (a[0].x + a[1].x) / 2, y: (a[0].y + a[1].y) / 2 });
+      const dist = (a: Point[]) => Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+      const a = mid(before), b = mid(after);
+      if (dist(before) > 5) view.current = zoomAt(view.current.zoom * dist(after) / dist(before), a.x, a.y, size.current, view.current);
+      const scale = transform(size.current, view.current).scale;
+      view.current.x -= (b.x - a.x) / scale; view.current.y -= (b.y - a.y) / scale;
+      last.current = null; refreshView(); return;
+    }
+    if (current.current.pan) {
+      const scale = transform(size.current, view.current).scale;
+      view.current.x -= (p.x - old.x) / scale; view.current.y -= (p.y - old.y) / scale;
+      refreshView();
+    } else if (!gesture.current) light(p);
+  }
   function release(id: number) {
     pointers.current.delete(id); last.current = null;
-    if (!pointers.current.size) gesture.current = false;
+    gesture.current = pointers.current.size > 1;
   }
+  touchInput.current = event => {
+    if (document.hidden) return;
+    for (const touch of Array.from(event.changedTouches)) {
+      // Safari also emits Touch Events for Pencil input, already handled as a pen.
+      if ((touch as Touch & { touchType?: string }).touchType === 'stylus' && window.PointerEvent) continue;
+      // Keep touch identifiers separate from mouse/pen pointer identifiers.
+      const id = -touch.identifier - 1;
+      if (event.type === 'touchstart') startPointer(id, position(touch));
+      else if (event.type === 'touchmove') movePointer(id, position(touch));
+      else release(id);
+    }
+  };
   return <>
     <div className="canvas-shell">
       <canvas ref={canvas} tabIndex={0} aria-label="Shared light board. Touch or drag to draw. Use arrow keys to move and Space to light a peg. Pinch with two fingers to zoom."
         className={pan ? 'pan-mode' : ''}
         onContextMenu={e => e.preventDefault()}
         onFocus={() => { focused.current = true; invalidate.current(); }}
-        onBlur={() => { focused.current = false; resetGesture(); invalidate.current(); }}
+        onBlur={() => { focused.current = false; if (![...pointers.current.keys()].some(id => id < 0)) resetGesture(); invalidate.current(); }}
         onPointerDown={e => {
-          if (e.button !== 0) return;
-          e.preventDefault(); focused.current = false;
+          if (e.button !== 0 || (e.pointerType === 'touch' && nativeTouch.current)) return;
+          e.preventDefault();
           e.currentTarget.setPointerCapture(e.pointerId);
-          const p = position(e); pointers.current.set(e.pointerId, p);
-          last.current = null;
-          if (pointers.current.size > 1) gesture.current = true;
-          if (!pan && !gesture.current) light(p);
+          startPointer(e.pointerId, position(e));
         }}
         onPointerMove={e => {
-          const old = pointers.current.get(e.pointerId); if (!old) return;
-          const p = position(e), before = [...pointers.current.values()];
-          pointers.current.set(e.pointerId, p);
-          if (pointers.current.size === 2) {
-            const after = [...pointers.current.values()];
-            const mid = (a: Point[]) => ({ x: (a[0].x + a[1].x) / 2, y: (a[0].y + a[1].y) / 2 });
-            const dist = (a: Point[]) => Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
-            const a = mid(before), b = mid(after);
-            if (dist(before) > 5) view.current = zoomAt(view.current.zoom * dist(after) / dist(before), a.x, a.y, size.current, view.current);
-            const scale = transform(size.current, view.current).scale;
-            view.current.x -= (b.x - a.x) / scale; view.current.y -= (b.y - a.y) / scale;
-            last.current = null; refreshView(); return;
-          }
-          if (pan) {
-            const scale = transform(size.current, view.current).scale;
-            view.current.x -= (p.x - old.x) / scale; view.current.y -= (p.y - old.y) / scale;
-            refreshView();
-          } else if (!gesture.current) {
-            const events = e.nativeEvent.getCoalescedEvents?.();
-            if (events?.length) for (const sample of events) light(position(sample)); else light(p);
-          }
+          if (e.pointerType === 'touch' && nativeTouch.current) return;
+          const samples = e.nativeEvent.getCoalescedEvents?.();
+          if (samples?.length) for (const sample of samples) movePointer(e.pointerId, position(sample));
+          else movePointer(e.pointerId, position(e));
         }}
-        onPointerUp={e => release(e.pointerId)} onPointerCancel={e => release(e.pointerId)} onLostPointerCapture={e => release(e.pointerId)}
+        onPointerUp={e => { if (e.pointerType !== 'touch' || !nativeTouch.current) release(e.pointerId); }} onPointerCancel={e => { if (e.pointerType !== 'touch' || !nativeTouch.current) release(e.pointerId); }} onLostPointerCapture={e => { if (e.pointerType !== 'touch' || !nativeTouch.current) release(e.pointerId); }}
         onKeyDown={e => {
           const delta: Record<string, Point> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
           if (delta[e.key]) { e.preventDefault(); focused.current = true; cursor.current = { x: Math.max(0, Math.min(COLS - 1, cursor.current.x + delta[e.key].x)), y: Math.max(0, Math.min(ROWS - 1, cursor.current.y + delta[e.key].y)) }; if (e.shiftKey) put([cursor.current.y * COLS + cursor.current.x]); else invalidate.current(); }
