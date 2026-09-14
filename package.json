@@ -52,5 +52,12 @@
     "typescript-eslint": "^8.70.0",
     "vite": "8.0.13"
   },
-  "type": "module"
+  "type": "module",
+  "description": "A shared light board with fading touch drawing and games for two people.",
+  "license": "MIT",
+  "homepage": "https://litebrite.it",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KenzoKai/litebrite.git"
+  }
 }

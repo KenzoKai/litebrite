@@ -1,78 +1,166 @@
 # Afterglow
 
-A React + Vite light board for two people. Share a reusable room link, draw with a finger, pen, or mouse, and watch lights fade after 1–3 seconds.
+Afterglow is a shared light board for two people. Open the same room link on two devices, draw with a finger, stylus, or mouse, and see the lights appear on both screens. Each light fades after one, two, or three seconds.
 
-## Connection and privacy
+The idea came from the Lite-Brite communication scene in *Stranger Things* season 4: a board of colored lights becomes a way to interact across a distance. Afterglow brings that interaction to a web browser, with touch drawing and a few shared games.
 
-All current clients communicate through `https://litebrite.it/relay.php` using HTTPS. **There is no WebRTC, STUN, TURN, external signaling, or direct-connection fallback.** Participants receive random session identities, never each other's IP addresses. The server and hosting provider still see connection IPs and may retain infrastructure metadata; this is not an anonymity service.
+**[Try Afterglow](https://litebrite.it/) · [Download a release](https://github.com/KenzoKai/litebrite/releases)**
 
-The room link keeps a random 256-bit secret after `#room=`. The browser imports it as a non-extractable AES-GCM key. The relay receives a domain-separated SHA-256 capability hash, not the secret or original room ID. It sees only ciphertext and random client/session identifiers. Directional client IDs and a fresh pair-session ID are authenticated with each encrypted message. Both browsers verify an encrypted hello before showing Connected. Sequence numbers reject replays. A host that serves malicious JavaScript or a compromised browser is outside this protection.
+## Using the app
 
-There are no accounts, database, application request logs, analytics, cookies, local storage, or drawing history. The PHP relay holds at most 64 encrypted packets (24KB of ciphertext) per recipient in a bounded shared-memory segment. Undelivered ciphertext expires after 800ms and is removed on the next request; delivery consumes packets once. No ciphertext is written to application files. An empty lockfile coordinates PHP workers. The OS/provider can manage RAM and logs independently; forensic erasure and zero infrastructure logging are not guaranteed.
+1. Open the site and select **Invite someone**.
+2. Share the room link and open it on a second device.
+3. When both browsers connect, draw on the board or select a game.
 
-Session membership expires after 12 seconds without a poll. Leaving clears the queue and changes the pair session; a 15-second tombstone rejects late polls from the departed client. A new participant cannot receive an earlier pair's packets. The relay supports up to 16 simultaneous rooms, bounds request size and memory, and limits polling per member. If the relay fails or reaches capacity, clients clear the board and retry rather than exposing IPs through another transport.
+The link is reusable. Opening it again creates a new session in the same room; it does not restore previous drawings or game positions. Each room accepts two participants. Extra tabs and devices can occupy those places; opening the room in another tab of the same browser transfers that browser's connection to the new tab.
 
-Browser drawing packets carry at most 120 cells each, with up to eight packets per request. Pending cells retain their individual colors and original fade deadlines; overflow drains on subsequent requests and expired cells are discarded. Sample ages travel inside the encryption so batching does not restart a light’s lifetime. Foreground polls target 100ms between request starts, without an extra pause after a slow response. Hidden pages discard incoming drawings. Blackout, leaving, and connection failures clear transient state. Free drawing uses up to 2,016 fading pegs, never a saved transcript. Optional games keep their current board and chess rule state in browser RAM for the round; game lights do not fade. Switching games, Blackout/Clear game, hiding the page, disconnecting, or leaving removes that state. Games have no saved scores, move viewer, or resume history. Fading cannot prevent screenshots, screen recordings, or a recipient copying what is visible.
+Drawing supports six colors and three fade settings. In free drawing, pinch to zoom, use **Move** to pan, or select **Fit** to show the whole board. Keyboard users can move the drawing cursor with the arrow keys, light a peg with Space, draw with Shift + arrows, and clear with Escape.
 
-Room links remain reusable and may be saved in browser history, bookmarks, clipboard, or sharing apps. Anyone with the full link can occupy an available spot. Additional tabs/devices count as participants. Same-origin tabs coordinate without persistent storage. Create a different room for a new link; old links are not revoked.
+## Games
 
-**Both participants must reload after upgrading from the old peer-to-peer version.** Old pages cannot communicate with the relay-only version and continue running their previously loaded code until closed/reloaded.
+| Mode | How it works |
+| --- | --- |
+| Chess | Two players take assigned sides. Select a piece, then a highlighted destination. Includes castling, en passant, promotion, checkmate, and draw detection. |
+| Tic-tac-toe | Take turns placing X and O on a shared board. |
+| Falling lights | A cooperative falling-block game. Both players control the same stack, clear rows, and contribute to the same score. Includes rotation, a landing preview, next piece, pause, and increasing speed. |
 
-## Local development
+Games can also be played locally without a connected partner. During a game, the surrounding area remains drawable by both participants. Game pieces stay lit while these drawings fade. **Clear drawings** removes the surrounding strokes; **Clear game** or Escape ends the round. Switching apps, leaving, or losing the connection clears the current session's drawings and game state.
 
-Requires Node 22.13+ (24 recommended), PHP 8.3+ with `shmop`, and Playwright Chromium for browser tests.
+## How it works
+
+The frontend is a React 19 and TypeScript application built with Vite. An HTML canvas renders the drawing grid, and a PHP endpoint relays updates between browsers over HTTPS. The server does not run the game rules or render the board.
+
+### Drawing and screen sizes
+
+Free drawing uses a shared 56 × 36 grid. Each browser scales it proportionally to its available space, so touch coordinates refer to the same cells on phones, tablets, and desktops. Zoom and pan affect only the local view. Canvas rendering accounts for device pixel density separately from input coordinates.
+
+Around games, the canvas uses pegs spaced every 10 CSS pixels. A separate 1024 × 1024 coordinate system maps strokes around the central game rectangle. Each browser projects those coordinates onto its own grid, giving wider margins more drawable pegs while keeping the game controls separate. Drawings fit the corresponding margin on the other device, so their proportions can change when the two layouts differ.
+
+Input samples are interpolated to fill gaps during a drag. Outgoing updates are batched into packets of up to 120 points, with at most eight packets per request. Each point retains its color and original fade deadline, including time spent waiting to be sent. This prevents delayed updates from restarting the fade.
+
+### Rooms and transport
+
+A room link contains a random room identifier and a 256-bit key in the URL fragment, the part after `#`. Fragments are available to browser JavaScript but are not included in HTTP requests. The browsers derive a room identifier for the relay and use the Web Crypto API to encrypt drawing and game updates with AES-GCM. Session identifiers and sequence numbers distinguish participants and reject repeated packets.
+
+All updates pass through `relay.php`; there is no direct browser-to-browser connection or WebRTC dependency. Active browsers aim to poll every 100 milliseconds. Actual update timing depends on network and server response times.
+
+The PHP relay uses a 2 MiB shared-memory segment and an empty lock file to coordinate workers. It supports up to 16 rooms, with two participants per room. Each recipient's queue is limited to 64 encrypted packets and 24 KB. Undelivered packets expire after 800 milliseconds and are removed on the next request. Inactive membership expires after 12 seconds. These bounds suit a small deployment; the relay is not designed to share state across multiple server machines.
+
+### Game synchronization
+
+One browser is selected to run the game rules and falling-block timer. The other sends numbered actions and retries until they are acknowledged. Updated game snapshots are sent through the same encrypted relay. Round identifiers keep delayed actions and drawings from appearing in a different game. Chess rules use [chess.js](https://github.com/jhlywa/chess.js).
+
+### Data handling
+
+The app has no accounts, database, analytics, application request logging, or saved drawing history. Drawings and game state live in browser memory; the relay briefly holds encrypted updates in shared memory. The app does not use cookies or browser storage to save sessions.
+
+Room links can remain in browser history, bookmarks, or sharing apps. Anyone with the complete link can join an available place. The hosting provider still receives connection metadata and may keep infrastructure logs. Fading changes what is displayed; it does not prevent screenshots or recordings. Encryption relies on the browsers running the intended application code.
+
+## Run locally
+
+Requirements:
+
+- Node.js 22.13 or newer; Node.js 24 is recommended and specified in `.nvmrc`.
+- PHP 8.3 or newer with the `shmop` extension enabled.
+- A current browser with Canvas, touch/pointer input, and Web Crypto support.
 
 ```sh
+git clone https://github.com/KenzoKai/litebrite.git
+cd litebrite
 npm ci
-# First terminal (development server emits request metadata to its terminal):
+```
+
+Start the relay in one terminal:
+
+```sh
 php -S 127.0.0.1:5184 -t public
-# Second terminal:
+```
+
+Start the frontend in another:
+
+```sh
 npm run dev
 ```
 
-Vite proxies `/relay.php` to the local PHP process. For multiple PHP workers on supported systems, set `PHP_CLI_SERVER_WORKERS=4` before starting PHP. The relay's application logging is disabled; production web-server/provider access logging must be managed separately. Use the deployed HTTPS site for phones; plain LAN HTTP cannot use WebCrypto.
+Open **http://localhost:5173**. Vite proxies `/relay.php` to the PHP process. On systems that support it, `PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:5184 -t public` enables multiple development workers. The PHP development server prints request metadata to its terminal.
 
-## Hostinger deployment
+Web Crypto requires HTTPS or a localhost secure context. To test on a physical phone, use an HTTPS deployment; a plain HTTP address on your local network is insufficient.
 
-Use the PHP/HTML website's **Advanced → GIT** deployment, repository `KenzoKai/litebrite`, branch **`codex/hostinger`**, destination **`public_html`**. The GitHub Action builds each push to `main` and updates the generated branch with `dist/`, including `relay.php` and `.htaccess`. Wait for the build to finish before redeploying in hPanel; auto-deployment is an independent Hostinger setting. Do not deploy uncompiled `main` directly into `public_html`.
+## Build and host
 
-`https://litebrite.it/relay.php` must execute PHP with shared memory available across workers. Its GET health response reports `{"transport":"https-memory","ready":true}`. A static host alone cannot run the relay. Static copies of the frontend at the permitted Hostinger/Sites origins use the same canonical relay endpoint and therefore share the same rooms. No TURN account, API key, database, or Node server is needed.
+```sh
+npm run build
+node scripts/verify-build.mjs dist
+```
 
-Hostinger's CDN browser-verification page was observed to discard the room fragment on fresh browser visits. If it appears, finish the check and reopen the original full room link. Do not put the secret into a query string to work around this: query strings reach servers and logs. CDN challenge filtering remains at its original Medium setting. Browser relay tests complete the normal homepage check before opening saved links; they do not validate that separate CDN first-visit behavior.
+The `dist/` directory contains the compiled frontend, `relay.php`, and hosting headers. Serve its contents from an HTTPS website that executes PHP and supports shared memory across its PHP workers. No production Node.js process, database, or external signaling service is required. A static-only host, including GitHub Pages, cannot run the relay.
 
-The relay only accepts browser origins explicitly listed in `public/relay.php`. When moving the canonical domain, update the endpoint in `app/connection.ts`, update that allowlist, deploy the relay, and retest. Do not enable direct connections as a fallback. Security headers are supplied in `.htaccess` and `_headers`; verify your host applies them. Browser URL fragments are never transmitted as part of HTTP URLs.
+**Before deploying on your own domain:**
 
-## Drawing controls
+1. In `app/connection.ts`, change the production relay URL from `https://litebrite.it/relay.php` to your relay's HTTPS address.
+2. In `public/relay.php`, replace the production entries in `$allowed` with your frontend's exact origins. Retain the localhost entries if you need local development.
+3. If running multiple independent installations under one operating-system account, give each relay a distinct `MEMORY_KEY` and matching lock-file name.
+4. Build again, upload the contents of `dist/`, and configure the host to apply the supplied headers. Apache-compatible hosts can use `.htaccess`; other servers need equivalent configuration.
+5. Check that a GET request to your `relay.php` returns `{"transport":"https-memory","ready":true}`, then test the same room link in two browsers.
 
-In free drawing, both screens share a 56×36 logical board with uniform scaling, independent of screen size or pixel density. Native touch events drive phone drawing; mouse/pen use pointer events. A brief second contact releases back into drawing when one finger remains. Pinch/pan, 1–4× zoom, Move, and Fit change only the local view. Six colors and 1/2/3-second fades are available. Keyboard controls: arrows, Space, Shift+arrows, and Escape for Blackout.
+The downloadable web build is configured for the hosted app at **litebrite.it**. For an independent installation, use the source release and make the domain changes above before building. `npm run preview` previews the compiled frontend only; it does not execute PHP.
 
-## Shared games
+### Hostinger and GitHub deployment
 
-Choose a mode above the board: **Chess**, **Tic-tac-toe**, or **Falling lights**, a cooperative falling-block game. Without a connected partner, games work as local practice. With two updated browsers, selecting a game switches both boards. Chess and tic-tac-toe assign Amber / White / X and Sky / Black / O; the UI identifies your side. Chess includes legal destinations, castling, en passant, promotion choice, checkmate, and draw detection through [chess.js](https://github.com/jhlywa/chess.js). Either player can start a fresh round. A shared ring of fading pegs surrounds every game: draw with a finger, pen, or mouse in the top, bottom, left, and right margins. The surrounding canvas has uniformly spaced pegs every 10 CSS pixels, with the same radius on every side. A separate 1024×1024 coordinate space maps strokes proportionally around the protected game rectangle on different screens. Fine stroke samples are projected onto each screen’s peg grid; wide margins gain real drawing detail instead of stretching eight columns. Both browsers must reload to use this frame format. Drawing color and fade controls stay available. **Clear drawings** erases only the surrounding ink; **Clear game** or Escape ends the round. Ink packets carry the round identifier so old strokes cannot appear in a new game or the free-drawing board. Falling lights uses one shared stack and score with a seven-piece bag, row clearing, ghost landing preview, next piece, increasing gravity, touch buttons, and keyboard controls.
+The included GitHub Action builds pushes to `main` and writes the contents of `dist/` to the generated `codex/hostinger` branch. In Hostinger's PHP/HTML hosting panel, configure **Advanced → GIT** to deploy that branch into `public_html`. Wait for the GitHub build to finish before deploying. Hostinger auto-deployment is a separate setting.
 
-One browser, elected by the pair's random client identifiers, owns the rules and gravity. Encrypted snapshots of the current board replace older snapshots; the other browser retries numbered commands until acknowledged. Duplicates and stale moves are ignored. Game snapshots fit the existing relay limits and expire in the same 800ms server window. A generation counter carried by clears, game messages, and hellos prevents delayed snapshots from restoring a cleared game, even when a clear packet is lost. Gameplay cannot survive either browser leaving or a broken connection. No direct networking, server game storage, or logging is added. Both participants must reload after the update; older clients can still draw but cannot join games.
+Deploy the generated branch, not the uncompiled source branch. The workflow uses checksum-based copying and verifies that every asset referenced by `index.html` exists in the generated output.
 
-## Validation
+## Checks
+
+Build, lint, and focused tests:
 
 ```sh
 npm run build
 npm run lint
 npm run test:geometry
-node tests/relay-api.mjs
+node tests/game-frame-geometry.mjs
 node tests/relay-crypto.mjs
 node tests/relay-batching.mjs
-node tests/relay-pacing.mjs
 node tests/games.mjs
 node tests/games-crypto.mjs
-node tests/game-frame-geometry.mjs
-TEST_BASE_URL=http://localhost:5173/ node tests/game-surround.mjs
-TEST_BASE_URL=http://localhost:5173/ node tests/games-browser.mjs
-node tests/continuous-strokes.mjs
-TEST_BASE_URL=http://localhost:5173/ node tests/continuous-touch.mjs
-TEST_BASE_URL=http://localhost:5173/ node tests/touch-recovery.mjs
-TEST_BASE_URL=http://localhost:5173/ node tests/live-smoke.mjs
 ```
 
-`RELAY_TEST_URL` overrides the PHP endpoint for relay tests. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` selects a Chromium binary; otherwise install it with `npx playwright install chromium`. Tests create isolated, random rooms and do not use existing user rooms. The sustained-touch test forbids WebRTC and WebSocket construction and verifies two-way drawing and expiry through the relay. `TEST_RELAY_LATENCY_MS=150` adds delay to each browser relay request; `TEST_FADE_SECONDS=2` selects a longer fade for slower-network tests. A one-second fade can expire in transit on very slow connections. The backend test checks burst buffering, admission, identity binding, one-time delivery, packet expiry, and stale-session isolation. Screenshots in `outputs/` are ignored.
+With the local frontend and PHP relay running, install the browser test runtime and run the integration tests:
 
-The optional WebMCP tool `blackout_board` clears the board and never exposes drawings or invitation secrets.
+```sh
+npx playwright install chromium
+TEST_BASE_URL=http://localhost:5173/ node tests/live-smoke.mjs
+TEST_BASE_URL=http://localhost:5173/ node tests/continuous-touch.mjs
+TEST_BASE_URL=http://localhost:5173/ node tests/game-surround.mjs
+TEST_BASE_URL=http://localhost:5173/ node tests/games-browser.mjs
+```
+
+Tests create their own rooms. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` selects an existing Chromium installation, `RELAY_TEST_URL` selects a relay endpoint for backend tests, and `TEST_BASE_URL` selects the frontend. Browser screenshots are written to the ignored `outputs/` directory.
+
+## Troubleshooting
+
+- **Waiting for your person:** Both browsers need the complete, identical room link and access to the configured relay. Check its health response and allowed origins.
+- **Room full:** Close or leave another tab or device using the room. An unresponsive participant's membership expires after 12 seconds without a poll.
+- **Link loses its room information:** Some CDN browser-verification pages discard the URL fragment. Finish the verification, then reopen the original full link.
+- **Blank page after deployment:** Confirm that the host serves the compiled `index.html` and that its referenced files exist under `assets/`. Run the build verification command above.
+- **Devices behave differently after an update:** Reload both browsers so they run the same version.
+
+## Project layout
+
+| Path | Purpose |
+| --- | --- |
+| `app/page.tsx` | Main interface, room controls, and application state |
+| `app/board.tsx` | Canvas rendering, input, and fading |
+| `app/board-geometry.ts`, `app/game-frame-geometry.ts` | Coordinate mapping and stroke interpolation |
+| `app/connection.ts` | Room lifecycle, encryption, batching, and polling |
+| `app/games/` | Game rules, controls, and synchronization |
+| `public/relay.php` | Shared-memory HTTPS relay |
+| `tests/` | Geometry, transport, touch, and game checks |
+| `.github/workflows/hostinger-static.yml` | Build and deployment-branch generation |
+
+## License and inspiration
+
+Released under the [MIT License](LICENSE). Third-party dependencies retain their own licenses; the vendored stylesheet's license is included in `vendor/`.
+
+Afterglow is an independent project inspired by *Stranger Things* and the Lite-Brite toy. It is not affiliated with their creators or rights holders.
