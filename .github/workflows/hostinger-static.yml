@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: hostinger-static
@@ -14,9 +14,12 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'KenzoKai/litebrite'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -34,24 +37,30 @@ jobs:
             echo 'Uncompiled source entrypoint in build output'
             exit 1
           fi
-      - name: Update Hostinger deployment branch
+      - name: Publish to private Hostinger repository
         env:
           SOURCE_SHA: ${{ github.sha }}
+          DEPLOY_REPOSITORY: ${{ vars.HOSTINGER_DEPLOY_REPOSITORY }}
+          DEPLOY_KEY: ${{ secrets.HOSTINGER_DEPLOY_KEY }}
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git ls-remote --exit-code --heads origin codex/hostinger; then
-            git fetch origin codex/hostinger
-            git worktree add --detach "$RUNNER_TEMP/hostinger-site" FETCH_HEAD
-          else
-            git worktree add --detach "$RUNNER_TEMP/hostinger-site" HEAD
-            git -C "$RUNNER_TEMP/hostinger-site" checkout --orphan codex/hostinger
-            git -C "$RUNNER_TEMP/hostinger-site" rm -rf .
-          fi
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          [[ "$DEPLOY_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          umask 077
+          key_file="$RUNNER_TEMP/afterglow-deploy-key"
+          hosts_file="$RUNNER_TEMP/afterglow-known-hosts"
+          trap 'rm -f "$key_file" "$hosts_file"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$key_file"
+          unset DEPLOY_KEY
+          curl --fail --silent --show-error https://api.github.com/meta |
+            jq -er '.ssh_keys[] | "github.com " + .' > "$hosts_file"
+          export GIT_SSH_COMMAND="ssh -i '$key_file' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='$hosts_file'"
+          git clone --single-branch --branch codex/hostinger "git@github.com:$DEPLOY_REPOSITORY.git" "$RUNNER_TEMP/hostinger-site"
           rsync -a --checksum --delete --exclude=.git dist/ "$RUNNER_TEMP/hostinger-site/"
           node "$GITHUB_WORKSPACE/scripts/verify-build.mjs" "$RUNNER_TEMP/hostinger-site"
+          git -C "$RUNNER_TEMP/hostinger-site" config user.name 'github-actions[bot]'
+          git -C "$RUNNER_TEMP/hostinger-site" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git -C "$RUNNER_TEMP/hostinger-site" add -A
-          if ! git -C "$RUNNER_TEMP/hostinger-site" diff --cached --quiet; then
-            git -C "$RUNNER_TEMP/hostinger-site" commit -m "Build Afterglow from $SOURCE_SHA"
-            git -C "$RUNNER_TEMP/hostinger-site" push origin HEAD:refs/heads/codex/hostinger
-          fi
+          # Record the source revision even when its compiled output is unchanged.
+          git -C "$RUNNER_TEMP/hostinger-site" commit --allow-empty -m "Build Afterglow from $SOURCE_SHA"
+          git -C "$RUNNER_TEMP/hostinger-site" push origin HEAD:refs/heads/codex/hostinger

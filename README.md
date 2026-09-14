@@ -107,9 +107,13 @@ The downloadable web build is configured for the hosted app at **litebrite.it**.
 
 ### Hostinger and GitHub deployment
 
-The included GitHub Action builds pushes to `main` and writes the contents of `dist/` to the generated `codex/hostinger` branch. In Hostinger's PHP/HTML hosting panel, configure **Advanced → GIT** to deploy that branch into `public_html`. Wait for the GitHub build to finish before deploying. Hostinger auto-deployment is a separate setting.
+The public `KenzoKai/litebrite` repository contains the source and releases. Its GitHub Action builds pushes to `main` and publishes `dist/` to the `codex/hostinger` branch of the separate **private** `KenzoKai/litebrite-hostinger` repository. Generated deployment builds are no longer maintained as a branch in the public source repository.
 
-Deploy the generated branch, not the uncompiled source branch. The workflow uses checksum-based copying and verifies that every asset referenced by `index.html` exists in the generated output.
+The publisher uses the `HOSTINGER_DEPLOY_REPOSITORY` Actions variable and the `HOSTINGER_DEPLOY_KEY` Actions secret. The SSH key has write access only to the deployment repository; the source repository's built-in workflow token has read-only contents permission. The workflow runs only in the upstream source repository. Forks can build locally or adapt the workflow for their own deployment.
+
+In Hostinger's PHP/HTML hosting panel, configure **Advanced → GIT** to deploy `KenzoKai/litebrite-hostinger`, branch `codex/hostinger`, into `public_html`. The Hostinger GitHub connection needs access to the private deployment repository. Wait for the GitHub build to finish before deploying. Hostinger auto-deployment is a separate setting.
+
+Deploy the compiled output, not the source branch. The workflow uses checksum-based copying, verifies every asset referenced by `index.html`, and records the source commit in each private build commit.
 
 ## Checks
 
